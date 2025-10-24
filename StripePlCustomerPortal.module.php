@@ -180,13 +180,13 @@ class StripePlCustomerPortal extends WireData implements Module {
     }
   /** All online products that require access (based on configured product templates) */
   private function findAccessProducts(): \ProcessWire\PageArray {
-	$pages  = $this->wire('pages');
-	$san    = $this->wire('sanitizer');
-	$tpls   = array_values(array_filter(array_map(fn($n)=> $san->name($n), (array)($this->productTemplateNames ?? []))));
-	$tplSel = $tpls ? ('template=' . implode('|', $tpls) . ', ') : '';
-	// wenn keine Templates gesetzt sind, trotzdem nach requires_access suchen
-	$sel = $tplSel . 'requires_access=1, sort=-created';
-	return $pages->find($sel);
+    $pages  = $this->wire('pages');
+    $san    = $this->wire('sanitizer');
+  $tpls   = $this->getProductTemplateNames();
+    $tplSel = $tpls ? ('template=' . implode('|', $tpls) . ', ') : '';
+    // wenn keine Templates gesetzt sind, trotzdem nach requires_access suchen
+  $sel = $tplSel . 'requires_access=1, include=hidden, sort=-created';
+    return $pages->find($sel);
   }
     
   /** Create/verify template + file + page. */
@@ -255,6 +255,14 @@ class StripePlCustomerPortal extends WireData implements Module {
     }
   }
   
+  /** Names der Produkt-Templates aus SPL-Config holen */
+  private function getProductTemplateNames(): array {
+    $cfg  = (array) $this->modules->getConfig('StripePaymentLinks');
+    $raw  = (array) ($cfg['productTemplateNames'] ?? []);
+    $san  = $this->wire('sanitizer');
+    return array_values(array_unique(array_filter(array_map([$san,'name'], $raw))));
+  }
+  
   /** Liefert normalisierte Käufe: eine Zeile pro (purchase × product) */
   public function getPurchasesData(User $user): array {
     $pages = $this->wire('pages');
@@ -268,7 +276,7 @@ class StripePlCustomerPortal extends WireData implements Module {
     $pids = array_values(array_unique(array_filter($pids)));
     $byId = [];
     if ($pids) {
-      foreach ($pages->find('id=' . implode('|', $pids)) as $p) $byId[(int)$p->id] = $p;
+      foreach ($pages->find('id=' . implode('|', $pids) . ', include=all') as $p) $byId[(int)$p->id] = $p;
     }
   
     $rows = [];
@@ -332,74 +340,74 @@ class StripePlCustomerPortal extends WireData implements Module {
   /** Public so the template can call it. */
 /** Public so the template can call it. */
   public function renderAccount(string $view = 'grid'): string {
-	$user = $this->wire('user');
+    $user = $this->wire('user');
   
-	// not logged in → redirect + login modal
-	if(!$user->isLoggedin()){
-	  $session = $this->wire('session');
-	  $config  = $this->wire('config');
+    // not logged in → redirect + login modal
+    if(!$user->isLoggedin()){
+      $session = $this->wire('session');
+      $config  = $this->wire('config');
   
-	  // Nach Login wieder zu /account/
-	  $session->set('pl_intended_url', $this->wire('page')->httpUrl);
+      // Nach Login wieder zu /account/
+      $session->set('pl_intended_url', $this->wire('page')->httpUrl);
   
-	  // Login-Modal auf der nächsten Seite automatisch öffnen
-	  $session->set('pl_open_login', 1);
+      // Login-Modal auf der nächsten Seite automatisch öffnen
+      $session->set('pl_open_login', 1);
   
-	  // Sichere Default-Ziel-URL (Home) ohne Pages-API
-	  $to = (string)($config->urls->httpRoot ?? $config->urls->root);
+      // Sichere Default-Ziel-URL (Home) ohne Pages-API
+      $to = (string)($config->urls->httpRoot ?? $config->urls->root);
   
-	  // Same-origin-Referrer bevorzugen
-	  $ref = isset($_SERVER['HTTP_REFERER']) ? (string) $_SERVER['HTTP_REFERER'] : '';
-	  if($ref !== ''){
-		try {
-		  $ru = parse_url($ref);
-		  if(!empty($ru['host']) && $ru['host'] === $config->httpHost) {
-			$to = $ref;
-		  }
-		} catch(\Throwable $ex) { /* ignore → fallback bleibt $to */ }
-	  }
+      // Same-origin-Referrer bevorzugen
+      $ref = isset($_SERVER['HTTP_REFERER']) ? (string) $_SERVER['HTTP_REFERER'] : '';
+      if($ref !== ''){
+        try {
+          $ru = parse_url($ref);
+          if(!empty($ru['host']) && $ru['host'] === $config->httpHost) {
+            $to = $ref;
+          }
+        } catch(\Throwable $ex) { /* ignore → fallback bleibt $to */ }
+      }
   
-	  $session->redirect($to, false);
-	  return '';
-	}
+      $session->redirect($to, false);
+      return '';
+    }
   
-	// explicit view parameter OR ?view=table override
-	$viewParam = $this->wire('input')->get->text('view');
-	if ($viewParam) $view = $viewParam;
+    // explicit view parameter OR ?view=table override
+    $viewParam = $this->wire('input')->get->text('view');
+    if ($viewParam) $view = $viewParam;
   
-	// choose rendering mode
-	switch ($view) {
-	  case 'table':
-		$content = $this->renderPurchasesTable($user);
-		break;
+    // choose rendering mode
+    switch ($view) {
+      case 'table':
+        $content = $this->renderPurchasesTable($user);
+        break;
   
-	  case 'grid':
-		$content = $this->renderPurchasesGrid($user);
-		break;
+      case 'grid':
+        $content = $this->renderPurchasesGrid($user);
+        break;
    
-	  case 'grid-all':
- 		$content = $this->renderPurchasesGridAll($user);
- 		break;
-	  
-	  default:
-		// fallback → future views can be added easily here
-		$content = $this->renderAccountGrid($user);
-		break;
-	}
+      case 'grid-all':
+         $content = $this->renderPurchasesGridAll($user);
+         break;
+      
+      default:
+        // fallback → future views can be added easily here
+        $content = $this->renderAccountGrid($user);
+        break;
+    }
   
-  	$content =  '<div class="row g-3">'.$content.'</div>'; 
-	return $this->wrapContainer($content . $this->modalProfileEdit($user));
+      $content =  '<div class="row g-3">'.$content.'</div>'; 
+    return $this->wrapContainer($content . $this->modalProfileEdit($user));
   }
    
    public function renderEditButton(array $opts = []): string {
-	   $label   = $opts['label']  ?? $this->tLocal('button.edit');
-	   $class   = trim('btn btn-primary ' . ($opts['class'] ?? ''));
-	   $idAttr  = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
+       $label   = $opts['label']  ?? $this->tLocal('button.edit');
+       $class   = trim('btn btn-primary ' . ($opts['class'] ?? ''));
+       $idAttr  = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
    
-	   return '<button type="button"'.$idAttr.' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
-			. ' data-bs-toggle="modal" data-bs-target="#profileModal">'
-			. htmlspecialchars($label, ENT_QUOTES)
-			. '</button>';
+       return '<button type="button"'.$idAttr.' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
+            . ' data-bs-toggle="modal" data-bs-target="#profileModal">'
+            . htmlspecialchars($label, ENT_QUOTES)
+            . '</button>';
    }
     
   /* ========================= UI bits ========================= */
@@ -409,114 +417,114 @@ class StripePlCustomerPortal extends WireData implements Module {
   }
   
 public function renderPurchasesGrid(User $user, array $opts = []): string {
-	$L = fn($k) => $this->tLocal($k);
-	$rows = $this->getPurchasesData($user);
-	if (!$rows) return '<p>' . $L('ui.table.no_purchases') . '</p>';
+    $L = fn($k) => $this->tLocal($k);
+    $rows = $this->getPurchasesData($user);
+    if (!$rows) return '<p>' . $L('ui.table.no_purchases') . '</p>';
   
-	// --- pro Produkt nur die neueste Karte ausgeben ---
-	$seen = [];   // product_id => true
+    // --- pro Produkt nur die neueste Karte ausgeben ---
+    $seen = [];   // product_id => true
   
-	$badge = function(array $r): string {
-	  switch ($r['status_key']) {
-		case 'active_until':
-		  return '<span class="badge text-bg-success rounded-pill shadow-sm">'
-			   . $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', $r['status_until'])])
-			   . '</span>';
-		case 'expired_on':
-		  return '<span class="badge text-bg-secondary rounded-pill shadow-sm">'
-			   . $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', $r['status_until'])])
-			   . '</span>';
-		case 'paused':
-		  return '<span class="badge text-bg-warning rounded-pill shadow-sm">' . $this->tLocal('status.paused') . '</span>';
-		case 'canceled':
-		  return '<span class="badge text-bg-danger rounded-pill shadow-sm">' . $this->tLocal('status.canceled') . '</span>';
-		default:
-		  return '';
-	  }
-	};
+    $badge = function(array $r): string {
+      switch ($r['status_key']) {
+        case 'active_until':
+          return '<span class="badge text-bg-success rounded-pill shadow-sm">'
+               . $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', $r['status_until'])])
+               . '</span>';
+        case 'expired_on':
+          return '<span class="badge text-bg-secondary rounded-pill shadow-sm">'
+               . $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', $r['status_until'])])
+               . '</span>';
+        case 'paused':
+          return '<span class="badge text-bg-warning rounded-pill shadow-sm">' . $this->tLocal('status.paused') . '</span>';
+        case 'canceled':
+          return '<span class="badge text-bg-danger rounded-pill shadow-sm">' . $this->tLocal('status.canceled') . '</span>';
+        default:
+          return '';
+      }
+    };
   
-	$out = '';
-	foreach ($rows as $r) {
-	  $pid = (int) $r['product_id'];
-	  if (isset($seen[$pid])) continue;  // bereits eine Karte für dieses Produkt ausgegeben
-	  $seen[$pid] = true;
+    $out = '';
+    foreach ($rows as $r) {
+      $pid = (int) $r['product_id'];
+      if (isset($seen[$pid])) continue;  // bereits eine Karte für dieses Produkt ausgegeben
+      $seen[$pid] = true;
   
-	  $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
-	  $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
+      $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
+      $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
   
-	  $linkStart = $r['product_url']
-		? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link text-decoration-none text-reset">'
-		: '';
-	  $linkEnd = $r['product_url'] ? '</a>' : '';
+      $linkStart = $r['product_url']
+        ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link text-decoration-none text-reset">'
+        : '';
+      $linkEnd = $r['product_url'] ? '</a>' : '';
   
-	  $out .= '
-		<div class="col-12 col-sm-6 col-lg-4">
-		  <div class="card h-100 shadow-sm border-0 overflow-hidden">
-			<div class="position-relative">
-			  ' . $imgTag . '
-			  <div class="position-absolute bottom-0 end-0 m-2">' . $badge($r) . '</div>
-			</div>
-			<div class="card-body">
-			  <h4 class="card-title mb-0">' . $linkStart . $title . $linkEnd . '</h4>
-			</div>
-		  </div>
-		</div>';
-	}
-	return $out;
+      $out .= '
+        <div class="col-12 col-sm-6 col-lg-4">
+          <div class="card h-100 shadow-sm border-0 overflow-hidden">
+            <div class="position-relative">
+              ' . $imgTag . '
+              <div class="position-absolute bottom-0 end-0 m-2">' . $badge($r) . '</div>
+            </div>
+            <div class="card-body">
+              <h4 class="card-title mb-0">' . $linkStart . $title . $linkEnd . '</h4>
+            </div>
+          </div>
+        </div>';
+    }
+    return $out;
   }  
   /** Grid: gekaufte Produkte oben (bestehend aus renderPurchasesGrid), darunter „noch nicht gekauft“ in s/w */
   public function renderPurchasesGridAll(User $user): string {
-	// 1) Gekaufte Karten (benutzt deine bestehende Methode)
-	$ownedHtml = $this->renderPurchasesGrid($user);
+    // 1) Gekaufte Karten (benutzt deine bestehende Methode)
+    $ownedHtml = $this->renderPurchasesGrid($user);
   
-	// 2) IDs der gekauften Produkte sammeln
-	$ownedRows = $this->getPurchasesData($user);
-	$ownedIds  = [];
-	foreach ($ownedRows as $r) { $ownedIds[(int)$r['product_id']] = true; }
+    // 2) IDs der gekauften Produkte sammeln
+    $ownedRows = $this->getPurchasesData($user);
+    $ownedIds  = [];
+    foreach ($ownedRows as $r) { $ownedIds[(int)$r['product_id']] = true; }
   
-	// 3) Alle zugangsgated Produkte holen und ungekkaufte filtern
-	$all      = $this->findAccessProducts();
-	$unowned  = [];
-	foreach ($all as $p) {
-	  /** @var \ProcessWire\Page $p */
-	  if (!isset($ownedIds[(int)$p->id])) $unowned[] = $p;
-	}
-	if (!count($unowned)) {
-	  // nichts zusätzlich anzeigen
-	  return $ownedHtml;
-	}
+    // 3) Alle zugangsgated Produkte holen und ungekkaufte filtern
+    $all      = $this->findAccessProducts();
+    $unowned  = [];
+    foreach ($all as $p) {
+      /** @var \ProcessWire\Page $p */
+      if (!isset($ownedIds[(int)$p->id])) $unowned[] = $p;
+    }
+    if (!count($unowned)) {
+      // nichts zusätzlich anzeigen
+      return $ownedHtml;
+    }
   
-	// Einmaliges CSS für s/w
-	$css = '<style>
-	  .spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
-	  .spl-gray:hover .card-img-top{filter:none;opacity:.9}
-	  .spl-gray .card-title{opacity:.6}
-	  .spl-gray:hover .card-title{opacity:1}
-	</style>';
+    // Einmaliges CSS für s/w
+    $css = '<style>
+      .spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
+      .spl-gray:hover .card-img-top{filter:none;opacity:.9}
+      .spl-gray .card-title{opacity:.6}
+      .spl-gray:hover .card-title{opacity:1}
+    </style>';
   
-	// 4) Ungekaufte unten als zweites Grid (ohne Badges, Bild s/w)
-	$out  = $ownedHtml;
-	foreach ($unowned as $p) {
-	  $title = htmlspecialchars((string)$p->title, ENT_QUOTES);
-	  $url   = $p->httpUrl;
-	  $img   = '';
-	  if ($p->hasField('images') && $p->images->count()) {
-		$img = '<img class="card-img-top" src="'.htmlspecialchars($p->images->first()->size(800,600)->url, ENT_QUOTES).'" alt="">';
-	  }
-	  $out .= '
-		<div class="col-12 col-sm-6 col-lg-4">
-		  <div class="card h-100 shadow-sm spl-gray">
-			'.$img.'
-			<div class="card-body">
-			  <h4 class="card-title mb-0">
-				<a href="'.htmlspecialchars($url, ENT_QUOTES).'"
-				   class="stretched-link text-decoration-none text-dark">'.$title.'</a>
-			  </h4>
-			</div>
-		  </div>
-		</div>';
-	}
-	return $out . $css;
+    // 4) Ungekaufte unten als zweites Grid (ohne Badges, Bild s/w)
+    $out  = $ownedHtml;
+    foreach ($unowned as $p) {
+      $title = htmlspecialchars((string)$p->title, ENT_QUOTES);
+      $url   = $p->httpUrl;
+      $img   = '';
+      if ($p->hasField('images') && $p->images->count()) {
+        $img = '<img class="card-img-top" src="'.htmlspecialchars($p->images->first()->size(800,600)->url, ENT_QUOTES).'" alt="">';
+      }
+      $out .= '
+        <div class="col-12 col-sm-6 col-lg-4">
+          <div class="card h-100 shadow-sm spl-gray">
+            '.$img.'
+            <div class="card-body">
+              <h4 class="card-title mb-0">
+                <a href="'.htmlspecialchars($url, ENT_QUOTES).'"
+                   class="stretched-link text-decoration-none text-dark">'.$title.'</a>
+              </h4>
+            </div>
+          </div>
+        </div>';
+    }
+    return $out . $css;
   }
     
   private function renderPurchasesTable(User $user): string {
