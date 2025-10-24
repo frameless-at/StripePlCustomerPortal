@@ -387,12 +387,20 @@ class StripePlCustomerPortal extends WireData implements Module {
 		break;
 	}
   
-	// append profile edit button + modal
-	$btn = '<div class="mb-5"><button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#profileModal">'
-		. $this->tLocal('button.edit') . '</button></div>';
   	$content =  '<div class="row g-3">'.$content.'</div>'; 
-	return $this->wrapContainer($btn . $content . $this->modalProfileEdit($user));
+	return $this->wrapContainer($content . $this->modalProfileEdit($user));
   }
+   
+   public function renderEditButton(array $opts = []): string {
+	   $label   = $opts['label']  ?? $this->tLocal('button.edit');
+	   $class   = trim('btn btn-primary ' . ($opts['class'] ?? ''));
+	   $idAttr  = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
+   
+	   return '<button type="button"'.$idAttr.' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
+			. ' data-bs-toggle="modal" data-bs-target="#profileModal">'
+			. htmlspecialchars($label, ENT_QUOTES)
+			. '</button>';
+   }
     
   /* ========================= UI bits ========================= */
 
@@ -405,7 +413,9 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
 	$rows = $this->getPurchasesData($user);
 	if (!$rows) return '<p>' . $L('ui.table.no_purchases') . '</p>';
   
-	// Badge helper
+	// --- pro Produkt nur die neueste Karte ausgeben ---
+	$seen = [];   // product_id => true
+  
 	$badge = function(array $r): string {
 	  switch ($r['status_key']) {
 		case 'active_until':
@@ -425,36 +435,35 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
 	  }
 	};
   
-	// Grid output (no tabs, no date; title as H4, not underlined)
+	$out = '';
 	foreach ($rows as $r) {
-	  $title = htmlspecialchars($r['product_title'], ENT_QUOTES);
-	  $imgTag = $r['thumb_url']
-		? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">'
-		: '';
+	  $pid = (int) $r['product_id'];
+	  if (isset($seen[$pid])) continue;  // bereits eine Karte für dieses Produkt ausgegeben
+	  $seen[$pid] = true;
+  
+	  $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
+	  $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
   
 	  $linkStart = $r['product_url']
 		? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link text-decoration-none text-reset">'
 		: '';
 	  $linkEnd = $r['product_url'] ? '</a>' : '';
   
-	  // Card
 	  $out .= '
-	  <div class="col-12 col-sm-6 col-lg-4">
-		<div class="card h-100 shadow-sm border-0 overflow-hidden">
-		  <div class="position-relative">
-			' . $imgTag . '
-			<div class="position-absolute bottom-0 end-0 m-2">' . $badge($r) . '</div>
+		<div class="col-12 col-sm-6 col-lg-4">
+		  <div class="card h-100 shadow-sm border-0 overflow-hidden">
+			<div class="position-relative">
+			  ' . $imgTag . '
+			  <div class="position-absolute bottom-0 end-0 m-2">' . $badge($r) . '</div>
+			</div>
+			<div class="card-body">
+			  <h4 class="card-title mb-0">' . $linkStart . $title . $linkEnd . '</h4>
+			</div>
 		  </div>
-		  <div class="card-body">
-			<h4 class="card-title mb-0">' . $linkStart . $title . $linkEnd . '</h4>
-		  </div>
-		</div>
-	  </div>';
+		</div>';
 	}
-  
 	return $out;
-  }
-  
+  }  
   /** Grid: gekaufte Produkte oben (bestehend aus renderPurchasesGrid), darunter „noch nicht gekauft“ in s/w */
   public function renderPurchasesGridAll(User $user): string {
 	// 1) Gekaufte Karten (benutzt deine bestehende Methode)
@@ -492,7 +501,7 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
 	  $url   = $p->httpUrl;
 	  $img   = '';
 	  if ($p->hasField('images') && $p->images->count()) {
-		$img = '<img class="card-img-top" src="'.htmlspecialchars($p->images->first()->url, ENT_QUOTES).'" alt="">';
+		$img = '<img class="card-img-top" src="'.htmlspecialchars($p->images->first()->size(800,600)->url, ENT_QUOTES).'" alt="">';
 	  }
 	  $out .= '
 		<div class="col-12 col-sm-6 col-lg-4">
