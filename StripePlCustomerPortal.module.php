@@ -19,7 +19,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'       => 'StripePaymentLinks Customer Portal',
-      'version'     => '0.1.0',
+      'version'     => '0.1.1',
       'summary'     => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'      => 'frameless Media',
       'autoload'    => true,
@@ -36,61 +36,56 @@ class StripePlCustomerPortal extends WireData implements Module {
   public function init(): void {
     $this->ensureAccountTemplateAndPage();
 
+    $this->addHookBefore('Page::render', function(\ProcessWire\HookEvent $e) {
+      $input   = $this->wire('input');
+      $session = $this->wire('session');
+      $config  = $this->wire('config');
+    
+      if($input->get('spl_logout')) {
+        $session->logout();
+        $session->remove('pl_open_login');
+        $session->remove('pl_intended_url');
+        $session->redirect($config->urls->root); // nach Logout auf /
+      }
+    });
+    
     $this->addHook('/stripepaymentlinks/api', function(\ProcessWire\HookEvent $e){
         $this->handleProfileUpdate($e);
       });
       
-// --- Override modal texts when redirected from /account/ ---
-      $this->addHookAfter('StripePaymentLinks::t', function($e) {
-          $session  = $this->wire('session');
-          $intended = (string) $session->get('pl_intended_url');
-          if ($intended === '' || strpos($intended, '/account/') === false) return;
-      
-          $key = (string) $e->arguments(0);
-          if ($key === 'modal.login.title') { 
-              $e->return = $this->tLocal('modal.login.title'); 
-              return; 
-          }
-          if ($key === 'modal.login.body')  { 
-              $e->return = $this->tLocal('modal.login.body');  
-              return; 
-          }
-      });
-      
-      // --- Auto-open login modal when redirected from /account/ ---
       $this->addHookAfter('Page::render', function(\ProcessWire\HookEvent $e) {
-          $session  = $this->wire('session');
-          $user     = $this->wire('user');
-          $intended = (string) $session->get('pl_intended_url');
+        $session = $this->wire('session');
+        $user    = $this->wire('user');
+        $page    = $this->wire('page');
       
-          // logged-in → cleanup and skip
-          if ($user->isLoggedin()) {
-              $session->remove('pl_open_login');
-              return;
-          }
-      
-          // only if user came from /account/ redirect and modal is queued
-          if (!$session->get('pl_open_login') || strpos($intended, '/account/') === false) return;
-      
-          $html = (string) $e->return;
+        if($user->isLoggedin()) { 
           $session->remove('pl_open_login');
-      
-          if (strpos($html, 'id="loginModal"') !== false) {
-              $js = <<<JS
-      <script>
-      document.addEventListener('DOMContentLoaded', function() {
-        var el = document.getElementById('loginModal');
-        if (el && window.bootstrap) {
-          var m = bootstrap.Modal.getOrCreateInstance(el);
-          m.show();
+          return;
         }
+      
+        // Nur auf /account/ automatisch öffnen
+        if($page->path !== '/account/' || !$session->get('pl_open_login')) return;
+      
+        $html = (string)$e->return;
+        $session->remove('pl_open_login'); // Einmal-Flag
+      
+        if(strpos($html, 'id="loginModal"') !== false){
+          $js = '<script>document.addEventListener("DOMContentLoaded",function(){var el=document.getElementById("loginModal");if(el&&window.bootstrap){bootstrap.Modal.getOrCreateInstance(el).show();}});</script>';
+          $e->return = preg_replace('~</body>~i', $js.'</body>', $html, 1);
+        }
+      });            
+      $this->addHookAfter('StripePaymentLinks::t', function($e) {
+        $session  = $this->wire('session');
+        // Wenn das Login-Modal von /account/ kommt, eigene Texte verwenden
+        $intended = (string) $session->get('pl_intended_url'); // wird in renderAccount() gesetzt
+        if ($intended === '' || strpos($intended, '/account/') === false) return;
+      
+        $key = (string) $e->arguments(0);
+        if ($key === 'modal.login.title') { $e->return = $this->tLocal('modal.login.title');  return; }
+        if ($key === 'modal.login.body')  { $e->return = $this->tLocal('modal.login.body');   return; }
       });
-      </script>
-      JS;
-              $html = preg_replace('~</body>~i', $js . '</body>', $html, 1);
-              $e->return = $html;
-          }
-      });
+      
+     
   }
 
   /** Create template, template file and page on install. */
@@ -164,6 +159,11 @@ class StripePlCustomerPortal extends WireData implements Module {
         'api.csrf_invalid'          => $this->_('Invalid CSRF'),
         'api.not_signed_in'         => $this->_('Not signed in.'),
         'api.profile_updated'       => $this->_('Profile updated.'),
+        
+        // Navigation
+        'link.login'   => $this->_('Customer Login'),
+        'link.logout'  => $this->_('Logout'),
+        'link.account' => $this->_('My Account'),
       ];
     }
     
@@ -246,6 +246,7 @@ class StripePlCustomerPortal extends WireData implements Module {
       $p->parent   = $home;
       $p->name     = 'account';
       $p->title    = 'Account';
+      $p->addStatus(Page::statusHidden);
       try { $p->save(); } catch (\Throwable $e) { /* ignore */ }
     } else {
       // sicherstellen, dass Seite das richtige Template hat
@@ -342,33 +343,16 @@ class StripePlCustomerPortal extends WireData implements Module {
   public function renderAccount(string $view = 'grid'): string {
     $user = $this->wire('user');
   
-    // not logged in → redirect + login modal
+    // not logged in → KEIN Redirect, Modal direkt öffnen
     if(!$user->isLoggedin()){
       $session = $this->wire('session');
-      $config  = $this->wire('config');
-  
-      // Nach Login wieder zu /account/
-      $session->set('pl_intended_url', $this->wire('page')->httpUrl);
-  
-      // Login-Modal auf der nächsten Seite automatisch öffnen
-      $session->set('pl_open_login', 1);
-  
-      // Sichere Default-Ziel-URL (Home) ohne Pages-API
-      $to = (string)($config->urls->httpRoot ?? $config->urls->root);
-  
-      // Same-origin-Referrer bevorzugen
-      $ref = isset($_SERVER['HTTP_REFERER']) ? (string) $_SERVER['HTTP_REFERER'] : '';
-      if($ref !== ''){
-        try {
-          $ru = parse_url($ref);
-          if(!empty($ru['host']) && $ru['host'] === $config->httpHost) {
-            $to = $ref;
-          }
-        } catch(\Throwable $ex) { /* ignore → fallback bleibt $to */ }
-      }
-  
-      $session->redirect($to, false);
-      return '';
+    
+      // Für Texte/Return-URL sauber markieren
+      $session->set('pl_open_login', 1);                       // JS soll Modal öffnen
+      $session->set('pl_intended_url', $this->wire('page')->httpUrl); // Ziel / Texte
+    
+      // Schlanke Hülle zurückgeben – Inhalt kommt nach Login
+      return $this->wrapContainer('<div class="my-5"></div>');
     }
   
     // explicit view parameter OR ?view=table override
@@ -399,24 +383,50 @@ class StripePlCustomerPortal extends WireData implements Module {
     return $this->wrapContainer($content . $this->modalProfileEdit($user));
   }
    
-   public function renderEditButton(array $opts = []): string {
-       $label   = $opts['label']  ?? $this->tLocal('button.edit');
-       $class   = trim('btn btn-primary ' . ($opts['class'] ?? ''));
-       $idAttr  = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
-   
-       return '<button type="button"'.$idAttr.' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
-            . ' data-bs-toggle="modal" data-bs-target="#profileModal">'
-            . htmlspecialchars($label, ENT_QUOTES)
-            . '</button>';
-   }
+public function renderEditButton(array $opts = []): string {
+    $label   = $opts['label']  ?? $this->tLocal('button.edit');
+    $class   = trim('btn btn-primary d-flex align-items-center ' . ($opts['class'] ?? ''));
+    $idAttr  = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
+  
+    return '<button type="button"'.$idAttr.' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
+         . ' data-bs-toggle="modal" data-bs-target="#profileModal">'
+         // Icon (sichtbar <768 px)
+         . '<i class="bi bi-pencil fs-6 d-inline d-md-none"></i>'
+         // Text (sichtbar ≥768 px)
+         . '<span class="d-none d-md-inline ms-1">' . htmlspecialchars($label, ENT_QUOTES) . '</span>'
+         . '</button>';
+  }
+  
+    /** Renders the top-right button group: view switcher + edit button */
+    public function renderHeaderButtons(string $activeView = 'grid-all'): string {
+      $urlBase = $this->wire('page')->url;
+      $editBtn = $this->renderEditButton(['class'=>'btn btn-primary btn-sm']);
+      $isGrid  = $activeView === 'grid-all';
+      $isTable = $activeView === 'table';
     
+$icons = sprintf(
+        '<div class="d-flex align-items-center gap-3 me-4">
+          <a href="%1$s?view=grid-all" class="text-secondary %2$s" title="Grid view">
+            <i class="bi bi-grid fs-5"></i>
+          </a>
+          <a href="%1$s?view=table" class="text-secondary %3$s" title="Table view">
+            <i class="bi bi-list-ul fs-3"></i>
+          </a>
+        </div>',
+        htmlspecialchars($urlBase, ENT_QUOTES),
+        $isGrid  ? 'text-primary' : '',
+        $isTable ? 'text-primary' : ''
+      );
+    
+      return '<div class="d-flex align-items-center">' . $icons . $editBtn . '</div>';
+    }
   /* ========================= UI bits ========================= */
 
   private function wrapContainer(string $inner): string {
     return '<div class="container mb-5"><div class="row"><div class="col-lg-10 mx-auto">' . $inner . '</div></div></div>';
   }
   
-public function renderPurchasesGrid(User $user, array $opts = []): string {
+/* public function renderPurchasesGrid(User $user, array $opts = []): string {
     $L = fn($k) => $this->tLocal($k);
     $rows = $this->getPurchasesData($user);
     if (!$rows) return '<p>' . $L('ui.table.no_purchases') . '</p>';
@@ -471,9 +481,68 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
         </div>';
     }
     return $out;
-  }  
+  }  */
+
+public function renderPurchasesGrid(User $user, array $opts = []): string {
+    $rows = $this->getPurchasesData($user);
+    if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+
+    // einmaliges CSS für Overlay-Titel
+    $css = '<style id="spl-card-overlay-css">
+.spl-card{position:relative;overflow:hidden;border:0}
+.spl-card .card-img-top{display:block;width:100%;height:auto}
+.spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
+  background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
+.spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
+  text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+/* vorhandene Grau-Variante bleibt nutzbar */
+.spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
+.spl-card.spl-gray:hover .card-img-top{filter:none}
+</style>';
+
+    $out = (strpos((string)$css, 'spl-card-overlay-css') !== false ? $css : $css); // nur einmal mitliefern
+
+    $badge = function(array $r): string {
+        switch ($r['status_key']) {
+            case 'active_until': return '<span class="badge text-bg-success rounded-pill shadow-sm">' .
+                $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', $r['status_until'])]) . '</span>';
+            case 'expired_on':   return '<span class="badge text-bg-secondary rounded-pill shadow-sm">' .
+                $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', $r['status_until'])]) . '</span>';
+            case 'paused':       return '<span class="badge text-bg-warning rounded-pill shadow-sm">' . $this->tLocal('status.paused') . '</span>';
+            case 'canceled':     return '<span class="badge text-bg-danger rounded-pill shadow-sm">' . $this->tLocal('status.canceled') . '</span>';
+            default: return '';
+        }
+    };
+
+    $seen = [];
+    foreach ($rows as $r) {
+        $pid = (int)$r['product_id'];
+        if (isset($seen[$pid])) continue;
+        $seen[$pid] = true;
+
+        $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
+        $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="'.htmlspecialchars($r['thumb_url'],ENT_QUOTES).'" alt="">' : '';
+        $anchor = $r['product_url'] ? '<a href="'.htmlspecialchars($r['product_url'],ENT_QUOTES).'" class="stretched-link"></a>' : '';
+
+        $out .= '
+        <div class="col-12 col-sm-6 col-lg-4">
+          <div class="card spl-card shadow-sm">
+            <div class="position-relative">
+              '.$imgTag.'
+              <div class="spl-grad"></div>
+              <div class="spl-title"><h3 class="m-0">'.$title.'</h3></div>
+              <div class="position-absolute top-0 end-0 m-2">'.$badge($r).'</div>
+            </div>
+            '.$anchor.'
+          </div>
+        </div>';
+    }
+    return $out;
+}
+
+
   /** Grid: gekaufte Produkte oben (bestehend aus renderPurchasesGrid), darunter „noch nicht gekauft“ in s/w */
-  public function renderPurchasesGridAll(User $user): string {
+  /* public function renderPurchasesGridAll(User $user): string {
     // 1) Gekaufte Karten (benutzt deine bestehende Methode)
     $ownedHtml = $this->renderPurchasesGrid($user);
   
@@ -486,7 +555,6 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
     $all      = $this->findAccessProducts();
     $unowned  = [];
     foreach ($all as $p) {
-      /** @var \ProcessWire\Page $p */
       if (!isset($ownedIds[(int)$p->id])) $unowned[] = $p;
     }
     if (!count($unowned)) {
@@ -525,6 +593,45 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
         </div>';
     }
     return $out . $css;
+  } */
+  
+  public function renderPurchasesGridAll(User $user): string {
+      // obere (gekaufte) Karten mit Overlay
+      $ownedHtml = $this->renderPurchasesGrid($user);
+  
+      // IDs der gekauften Produkte
+      $ownedRows = $this->getPurchasesData($user);
+      $ownedIds  = [];
+      foreach ($ownedRows as $r) $ownedIds[(int)$r['product_id']] = true;
+  
+      // alle zugangsgated Produkte → ungekkaufte filtern
+      $all = $this->findAccessProducts();
+      $unowned = [];
+      foreach ($all as $p) if (!isset($ownedIds[(int)$p->id])) $unowned[] = $p;
+      if (!$unowned) return $ownedHtml;
+  
+      $out = $ownedHtml;
+  
+      foreach ($unowned as $p) {
+          $title = htmlspecialchars((string)$p->title, ENT_QUOTES);
+          $url   = $p->httpUrl;
+          $img   = ($p->hasField('images') && $p->images->count())
+                 ? '<img class="card-img-top" src="'.htmlspecialchars($p->images->first()->size(800,600)->url, ENT_QUOTES).'" alt="">'
+                 : '';
+  
+          $out .= '
+          <div class="col-12 col-sm-6 col-lg-4">
+            <div class="card spl-card spl-gray shadow-sm">
+              <div class="position-relative">
+                '.$img.'
+                <div class="spl-grad"></div>
+                <div class="spl-title"><h3 class="m-0">'.$title.'</h3></div>
+              </div>
+              <a href="'.htmlspecialchars($url,ENT_QUOTES).'" class="stretched-link"></a>
+            </div>
+          </div>';
+      }
+      return $out;
   }
     
   private function renderPurchasesTable(User $user): string {
@@ -533,7 +640,7 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
       return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
     }
   
-    $out  = '<h2 class="h4 mb-3">' . $this->tLocal('ui.purchases.title') . '</h2>';
+    $out  = '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
     $out .= '<div class="table-responsive"><table class="table table-sm align-middle">';
     $out .= '<thead><tr>'
           . '<th style="width:180px;">' . $this->tLocal('ui.table.head.date') . '</th>'
@@ -566,22 +673,6 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
     return $out;
   }
   
-  /** Minimal placeholder fill like SPL: supports {firstname} and {email} */
-  private function fillPlaceholdersLocal(string $text, ?\ProcessWire\User $u = null): string {
-      $withTokens = strtr($text, ['{firstname}' => '%%FIRSTNAME%%', '{email}' => '%%EMAIL%%']);
-      $escaped    = htmlspecialchars($withTokens, ENT_QUOTES, 'UTF-8');
-  
-      $firstname = $u ? (trim((string)$u->title) ?: (strpos($u->email, '@') !== false ? substr($u->email, 0, strpos($u->email, '@')) : $u->email)) : '';
-      $email     = $u ? (string)$u->email : '';
-      $fnEsc     = htmlspecialchars($firstname, ENT_QUOTES, 'UTF-8');
-      $emEsc     = htmlspecialchars($email,     ENT_QUOTES, 'UTF-8');
-  
-      $out = strtr($escaped, [
-          '%%FIRSTNAME%%' => ($fnEsc !== '' ? '<b>'.$fnEsc.'</b>' : ''),
-          '%%EMAIL%%'     => ($emEsc !== '' ? '<b>'.$emEsc.'</b>' : ''),
-      ]);
-      return '<p>'.$out.'</p>';
-  }
   
 /** Resolve absolute paths to SPL UI bits (ModalRenderer + modal view) */
   private function splUiPaths(): array {
@@ -611,7 +702,7 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
     
       $h         = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
       $title     = $this->tLocal('profile.title');
-      $introHtml = $this->fillPlaceholdersLocal($this->tLocal('profile.intro'), $user);
+      $introHtml = '<p><b>' . htmlspecialchars($this->tLocal('profile.intro'), ENT_QUOTES, 'UTF-8') . '</b></p>';
       $btnSave   = $this->tLocal('profile.save');
       $btnCancel = $this->tLocal('profile.cancel');
     
@@ -644,7 +735,103 @@ public function renderPurchasesGrid(User $user, array $opts = []): string {
     
       return $ui->render($modal);
     }
+/*
+public function renderLoginLink(array $opts = []): string {
+      $user     = $this->wire('user');
+      $page     = $this->wire('page');
+      $session  = $this->wire('session');
+      $config   = $this->wire('config');
+      $class    = trim((string)($opts['class'] ?? ''));
+      $isAccount = (strpos((string)$page->url, '/account/') === 0);
     
+      // --- nicht eingeloggt: Login-Link (Modal öffnen) ---
+      if (!$user->isLoggedin()) {
+        $label = $opts['label'] ?? 'Customer Login';
+    
+        // SPL übernimmt nach erfolgreichem Login den Redirect auf diese URL.
+        $session->set('pl_intended_url', $config->urls->root . 'account/');
+    
+        $onclick = "var m=document.getElementById('loginModal');"
+                 . "if(m&&window.bootstrap){bootstrap.Modal.getOrCreateInstance(m).show();return false;}"
+                 . "return false;";
+    
+        return sprintf(
+          '<a href="#" class="%s" onclick="%s">%s</a>',
+          htmlspecialchars($class, ENT_QUOTES),
+          htmlspecialchars($onclick, ENT_QUOTES),
+          htmlspecialchars($label, ENT_QUOTES)
+        );
+      }
+    
+      // --- eingeloggt + auf /account/ → Logout-Link ---
+      if ($isAccount) {
+        $href  = $page->url . '?spl_logout=1';
+        $label = $opts['label'] ?? 'Logout';
+        return sprintf('<a href="%s" class="%s">%s</a>',
+          htmlspecialchars($href, ENT_QUOTES),
+          htmlspecialchars($class, ENT_QUOTES),
+          htmlspecialchars($label, ENT_QUOTES)
+        );
+      }
+    
+      // --- eingeloggt, aber woanders → My Account ---
+      $label = $opts['label'] ?? 'My Account';
+      return sprintf(
+        '<a href="%saccount/" class="%s">%s</a>',
+        htmlspecialchars($config->urls->root, ENT_QUOTES),
+        htmlspecialchars($class, ENT_QUOTES),
+        htmlspecialchars($label, ENT_QUOTES)
+      );
+    }
+*/
+public function renderLoginLink(array $opts = []): string {
+  $user      = $this->wire('user');
+  $page      = $this->wire('page');
+  $session   = $this->wire('session');
+  $config    = $this->wire('config');
+  $class     = trim((string)($opts['class'] ?? ''));
+  $isAccount = (strpos((string)$page->url, '/account/') === 0);
+
+  // --- not logged in: Login link (open modal) ---
+  if (!$user->isLoggedin()) {
+    $label = $opts['label'] ?? $this->tLocal('link.login');
+
+    // SPL handles redirect after successful login.
+    $session->set('pl_intended_url', $config->urls->root . 'account/');
+
+    $onclick = "var m=document.getElementById('loginModal');"
+             . "if(m&&window.bootstrap){bootstrap.Modal.getOrCreateInstance(m).show();return false;}"
+             . "return false;";
+
+    return sprintf(
+      '<a href="#" class="%s" onclick="%s">%s</a>',
+      htmlspecialchars($class, ENT_QUOTES),
+      htmlspecialchars($onclick, ENT_QUOTES),
+      htmlspecialchars($label, ENT_QUOTES)
+    );
+  }
+
+  // --- logged in + on /account/ → Logout link ---
+  if ($isAccount) {
+    $href  = $page->url . '?spl_logout=1';
+    $label = $opts['label'] ?? $this->tLocal('link.logout');
+    return sprintf(
+      '<a href="%s" class="%s">%s</a>',
+      htmlspecialchars($href, ENT_QUOTES),
+      htmlspecialchars($class, ENT_QUOTES),
+      htmlspecialchars($label, ENT_QUOTES)
+    );
+  }
+
+  // --- logged in elsewhere → My Account link ---
+  $label = $opts['label'] ?? $this->tLocal('link.account');
+  return sprintf(
+    '<a href="%saccount/" class="%s">%s</a>',
+    htmlspecialchars($config->urls->root, ENT_QUOTES),
+    htmlspecialchars($class, ENT_QUOTES),
+    htmlspecialchars($label, ENT_QUOTES)
+  );
+}
     private function j(array $a, int $status = 200): string {
       http_response_code($status);
       header('Content-Type: application/json; charset=utf-8');
