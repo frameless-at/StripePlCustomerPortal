@@ -1,103 +1,121 @@
 # StripePaymentLinks Customer Portal (ProcessWire)
 
-A thin companion module for [StripePaymentLinks (SPL)](https://github.com/) that provides a customer account page at `/account/` and convenient login/account/logout links that respect SPL’s login modal and redirect flow.
+A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow –—no duplicate auth.
 
-![Example of a logged in user visiting his account](img/account_grid.png)
-
-Key features
-- Ready-made customer portal — automatically creates a functional /account/ page showing all purchased and available digital products.
-- Seamless integration with StripePaymentLinks — uses SPL’s existing login modal, magic-link system, and API; no duplicate auth logic.
-- One-click access for users — login, logout, and “My Account” links adapt automatically depending on user state and context.
-- Editable customer profile — includes a built-in “Edit my data” modal with CSRF protection and AJAX submission.
-- Customizable layout — provides grid, table, and mixed “grid-all” views with Bootstrap styling.
-- Fully translatable — all interface texts defined via i18n() and editable through ProcessWire’s Language system.
+![Customer portal grid view](img/account_grid.jpeg)
 
 ---
 
-## Requirements
-- ProcessWire 3.0.210+
-- StripePaymentLinks module (a version that provides the login modal and `t()` translations)
-- Bootstrap (SPL’s modal depends on it, optionally auto injected by SPL)
+## 1) Requirements
+
+- **ProcessWire** 3.0.210+
+- **StripePaymentLinks** (SPL) installed & configured
+- **Bootstrap JS** available on the front-end (SPL’s login modal uses it)
+
+**Product pages expected by the grid:**
+- Must live on templates listed in SPL → `productTemplateNames`
+- Must set the **checkbox/flag** `requires_access=1`
+- (Optional but recommended) have an **Images** field named **`images`**  
+  The grid will use the **first image** as the product thumbnail:
+  - field name is currently **hard-coded** to `images`
+  - if the field doesn’t exist or is empty, the card simply has no image
 
 ---
 
-## What the module installs
-- Template `spl_account` (with fieldgroup `fg_spl_account`)
-- Page `/account/` using `spl_account`
-- Template file `/site/templates/spl_account.php` with all necessary UI elements. You may customize `spl_account.php` as needed.
+## 2) What this module installs
+
+- Template **`spl_account`** (fieldgroup **`fg_spl_account`**)
+- Page **`/account/`** using `spl_account`
+- Template file **`/site/templates/spl_account.php`** with a minimal layout that calls the portal methods  
+  (You can customize this file freely.)
 
 ---
 
-## Usage in templates
+## 3) Quick start
 
-### 1) Login / Account / Logout link
-Render a single link that adapts to user state and location:
+Add a login/account/logout link anywhere in your templates:
 
-```php
-<?php
-echo $modules->get('StripePlCustomerPortal')->renderLoginLink([
+```
+$modules->get('StripePlCustomerPortal')->renderLoginLink([
   'class' => 'nav-link text-white', // optional
-  // 'label' => '…'                  // optional, overrides i18n default
+  // 'label' => 'Custom label'      // optional — overrides i18n default
 ]);
-?>
 ```
 
-Behavior:
-- Logged out → “Customer Login” link opens SPL’s `#loginModal`; sets `pl_intended_url` to `/account/`.
-- Logged in on `/account/` → “Logout” link (appends `?spl_logout=1`).
-- Logged in elsewhere → “My Account” linking to `/account/`.
+**Behavior**
+- Logged out → shows **“Customer Login”** that opens SPL’s `#loginModal` and sets the intended redirect to `/account/`.
+- Logged in on `/account/` → shows **“Logout”** (appends `?spl_logout=1`).
+- Logged in elsewhere → shows **“My Account”** linking to `/account/`.
 
-### 2) Account page content
-`renderAccount()` outputs the purchases as grid or table:
+The module auto-creates `/account/`. You can link to it or place the button in your site header.
 
-![Example of a logged in user visiting his account, table view](img/account_table.png)
+---
 
+## 4) Account page usage
 
-### 3) Optional header buttons
+The file `/site/templates/spl_account.php` is created for you and calls the module’s renderer. It shows:
+- page header with **view switcher** and **“Edit my data”** button
+- the **grid** of purchased products (and optional “not yet purchased” items)
+- a profile **edit modal** (AJAX + CSRF)
 
-```php
-<?php
-echo $modules->get('StripePlCustomerPortal')->renderHeaderButtons('grid-all');
-?>
+Switch views (grid / table / grid-all) via querystring:
+
+- `/account/?view=grid-all` (default used by the template)
+- `/account/?view=grid`
+- `/account/?view=table`
+
+You can also render the header buttons anywhere:
+
+```
+$modules->get('StripePlCustomerPortal')->renderHeaderButtons('grid-all');
 ```
 
-Shows a compact grid/table view switcher and an “Edit my data” button.
+---
 
-![Example of a logged in user visiting his account, edit data modal](img/account_edit-data.png)
+## 5) Product data used by the grid (important)
+
+The grid is built from the user’s SPL purchases and your product pages. For **each product**:
+
+- **Title**: page title
+- **URL**: page URL (only linked when `requires_access=1`)
+- **Status badge**: derived from SPL’s period/paused/canceled metadata
+- **Thumbnail**: **first image** of the **`images`** field  
+  → If you want images in the cards, add an **Images** field named **`images`** to your product templates.  
+  → If the field is missing or empty, the card renders without an image.
 
 ---
 
-## Internationalization (i18n)
-All strings are defined via `tLocal()` and can be translated using ProcessWire’s Language tools. The module also overrides SPL’s `t()` only when `pl_intended_url` points to `/account/`, allowing custom modal texts for the portal flow.
+## 6) Internationalization (i18n)
 
+All UI texts live in the module’s `i18n()` and are picked up by ProcessWire’s Language tools:
 
----
+- Link labels: `link.login`, `link.logout`, `link.account`
+- Grid / table headings, status labels, profile modal labels, etc.
 
-## Troubleshooting
-- Modal doesn’t open on `/account/`  
-  Ensure your theme outputs SPL’s `#loginModal` markup (SPL should include it), and Bootstrap JS is present. Also verify the page actually has `</body>` so the injector can append the script.
-
-- Not redirected to `/account/` after login  
-  Confirm `pl_intended_url` is set to `/account/` at click-time. The module sets it in `renderLoginLink()` for logged-out users and in `renderAccount()` when the page is requested. Also ensure SPL reads `pl_intended_url`.
-
-- Modal opens on other pages unexpectedly  
-  The module’s auto-open runs only on `/account/`. If a different page opens a separate “login required” modal, that likely comes from SPL’s product gating and is expected (separate from this module).
+The module also overrides SPL’s `t()` **only** when the intended URL points to `/account/`, so you can present custom login modal texts for the portal flow.
 
 ---
 
-## Security notes
-- Profile updates are protected by ProcessWire’s CSRF (`$session->CSRF`).
-- Redirect sanitization: return_url validation prevents external hosts.
-- Logout uses ProcessWire’s `$session->logout()`.
+## 7) Screenshots
+
+**Grid view**  
+![Grid](img/account_grid.jpeg)
+
+**Table view**  
+![Table](img/account_table.jpeg)
+
+**Edit profile modal**  
+![Edit data](img/account_edit-data.jpeg)
 
 ---
 
-## Uninstall
-- Removes `/account/` and the `spl_account` template.
-- Leaves the physical `/site/templates/spl_account.php` in place (you may have customized it).
+## 8) Uninstall
 
+- Removes `/account/` page and `spl_account` template.
+- Leaves `/site/templates/spl_account.php` in place (in case you customized it).
 
 ---
 
-## License
-MIT. Use at your own risk.
+## 9) License
+
+MIT.
