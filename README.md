@@ -1,6 +1,6 @@
 # StripePaymentLinks Customer Portal (ProcessWire)
 
-A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow –—no duplicate auth.
+A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow – no duplicate auth.
 
 ![Customer portal grid view](img/account_grid.png)
 
@@ -35,12 +35,12 @@ A lightweight companion module for **StripePaymentLinks (SPL)** that adds a read
 Add a login/account/logout link anywhere in your templates:
 
 ```
-$modules->get('StripePlCustomerPortal')->renderLoginLink([
-  'class' => 'nav-link text-white', // optional
-  // 'label' => 'Custom label'      // optional — overrides i18n default
-]);
+$modules->get('StripePlCustomerPortal')->renderLoginLink();
 ```
-
+You can also pass CSS classes or the links label via options:
+```
+$modules->get('StripePlCustomerPortal')->renderLoginLink(['class' => 'nav-link text-white', 'label' => 'Custom label']);
+```
 **Behavior**
 - Logged out → shows **“Customer Login”** that opens SPL’s `#loginModal` and sets the intended redirect to `/account/`.
 - Logged in on `/account/` → shows **“Logout”** (appends `?spl_logout=1`).
@@ -59,8 +59,8 @@ The file `/site/templates/spl_account.php` is created for you and calls the modu
 
 Switch views (grid / table / grid-all) via querystring:
 
-- `/account/?view=grid-all` (default used by the template)
-- `/account/?view=grid`
+- `/account/?view=grid-all` (all products, not yet purchased products greyéd out, default used by the template)
+- `/account/?view=grid` (without not yet purchased products)
 - `/account/?view=table`
 
 You can also render the header buttons anywhere:
@@ -76,8 +76,8 @@ $modules->get('StripePlCustomerPortal')->renderHeaderButtons('grid-all');
 The grid is built from the user’s SPL purchases and your product pages. For **each product**:
 
 - **Title**: page title
-- **URL**: page URL (only linked when `requires_access=1`)
-- **Status badge**: derived from SPL’s period/paused/canceled metadata
+- **URL**: the whole grid item (card) is linked to the page URL
+- **Status badge**: only visible if product is a subscription, derived from SPL’s period/paused/canceled metadata
 - **Thumbnail**: **first image** of the **`images`** field  
   → If you want images in the cards, add an **Images** field named **`images`** to your product templates.  
   → If the field is missing or empty, the card renders without an image.
@@ -86,11 +86,7 @@ The grid is built from the user’s SPL purchases and your product pages. For **
 
 ## 6) Internationalization (i18n)
 
-All UI texts live in the module’s `i18n()` and are picked up by ProcessWire’s Language tools:
-
-- Link labels: `link.login`, `link.logout`, `link.account`
-- Grid / table headings, status labels, profile modal labels, etc.
-
+All UI texts live in the module’s `i18n()` and are picked up by ProcessWire’s Language tools.
 The module also overrides SPL’s `t()` **only** when the intended URL points to `/account/`, so you can present custom login modal texts for the portal flow.
 
 ---
