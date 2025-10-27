@@ -10,14 +10,13 @@ A lightweight companion module for **StripePaymentLinks (SPL)** that adds a read
 
 - **ProcessWire** 3.0.210+
 - **StripePaymentLinks** (SPL) installed & configured
-- **Bootstrap JS** available on the front-end (SPL’s login modal uses it)
+- **Bootstrap** available on the front-end (SPL can load it automatically)
 
 **Product pages expected by the grid:**
 - Must live on templates listed in SPL → `productTemplateNames`
 - Must set the **checkbox/flag** `requires_access=1`
-- (Optional but recommended) have an **Images** field named **`images`**  
+- (Optional but recommended) have an **Images** field  
   The grid will use the **first image** as the product thumbnail:
-  - field name is currently **hard-coded** to `images`
   - if the field doesn’t exist or is empty, the card simply has no image
 
 ---
