@@ -291,12 +291,25 @@ class StripePlCustomerPortal extends WireData implements Module {
     // 3) Template file /site/templates/spl_account.php create (only when missing or forced)
     $tplFile = rtrim($config->paths->templates, '/\\') . DIRECTORY_SEPARATOR . 'spl_account.php';
     if ($writeFile || !is_file($tplFile)) {
-      $code = <<<'PHP'
-<?php namespace ProcessWire;
-/** @var \ProcessWire\Modules $modules */
-$portal = $modules->get('StripePlCustomerPortal');
-$content = $portal->renderAccount();
-PHP;
+  $code = <<<'PHP'
+  <?php namespace ProcessWire;
+  /** @var \ProcessWire\Modules $modules */
+  $portal = $modules->get('StripePlCustomerPortal');
+  
+  $content = '
+  <div class="container py-5 mt-5">
+    <div class="row">
+      <div class="col-lg-10 mx-auto">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h1 class="mb-0">Hello, ' . $user->title . '</h1>
+          ' . $portal->renderHeaderButtons() . '
+        </div>
+      </div>
+    </div>
+  </div>';
+  
+  $content .= $portal->renderAccount('grid-all');
+  PHP;
       if (is_dir($config->paths->templates)) {
         @file_put_contents($tplFile, $code, LOCK_EX);
         @chmod($tplFile, 0660);
@@ -385,11 +398,8 @@ PHP;
         // Category/Tag for tabs (configurable: template, field, parent)
         $category = (string) ($p->get('product_category') ?: $p->template->label ?: $p->template->name);
 
-        // Thumb (optional)
-        $thumbUrl = '';
-        if ($p->hasField('images') && $p->images->count()) {
-          $thumbUrl = $p->images->first()->size(800,600)->url;
-        }
+        // Thumb (auto: first available image field of type FieldtypeImage)
+        $thumbUrl = $this->productThumbUrl($p);
 
         $rows[] = [
           'purchase_ts'   => $ts,
@@ -518,6 +528,34 @@ PHP;
     return '<div class="container mb-5"><div class="row"><div class="col-lg-10 mx-auto">' . $inner . '</div></div></div>';
   }
 
+  /** 
+  * Return a product thumb URL from the first available image field (any name). 
+  */
+  private function productThumbUrl(\ProcessWire\Page $p, int $w = 800, int $h = 600): string {
+    // 1) If you ever want to prefer specific field names, you can drop them here:
+    $preferred = []; // e.g. ['hero', 'cover', 'images'] — leave empty to just scan all fields
+  
+    foreach ($preferred as $fname) {
+      if ($p->hasField($fname)) {
+        $imgs = $p->get($fname);
+        if ($imgs instanceof \ProcessWire\Pageimages && $imgs->count()) {
+          return $imgs->first()->size($w, $h)->url;
+        }
+      }
+    }
+  
+    // 2) Fallback: scan every field on the page and pick the first image field with images
+    foreach ($p->fields as $field) {
+      if ($field->type instanceof \ProcessWire\FieldtypeImage) {
+        $imgs = $p->get($field->name);
+        if ($imgs instanceof \ProcessWire\Pageimages && $imgs->count()) {
+          return $imgs->first()->size($w, $h)->url;
+        }
+      }
+    }
+    return '';
+  }
+  
   /**
    * Render purchased products as cards (one card per product).
    *
