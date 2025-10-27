@@ -24,7 +24,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.1',
+      'version'  => '0.1.2',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'autoload' => true,
@@ -256,85 +256,97 @@ class StripePlCustomerPortal extends WireData implements Module {
    * @param bool $writeFile If true, write the template file even if it exists.
    * @return void
    */
-  private function ensureAccountTemplateAndPage(bool $writeFile = false): void {
-    $templates   = $this->wire('templates');
-    $fieldgroups = $this->wire('fieldgroups'); // important: its own API object
-    $pages       = $this->wire('pages');
-    $config      = $this->wire('config');
-
-    // 1) Fieldgroup: get or create
-    /** @var \ProcessWire\Fieldgroup|null $fg */
-    $fg = $fieldgroups->get('fg_spl_account');
-    if (!$fg || !$fg->id) {
-      $fg = new \ProcessWire\Fieldgroup();
-      $fg->name = 'fg_spl_account';
-      $fieldgroups->save($fg);
-    }
-
-    // 2) Template: get or create and assign Fieldgroup
-    /** @var \ProcessWire\Template|null $tpl */
-    $tpl = $templates->get('spl_account');
-    if (!$tpl || !$tpl->id) {
-      $tpl = new \ProcessWire\Template();
-      $tpl->name       = 'spl_account';
-      $tpl->fieldgroup = $fg;
-      $tpl->noChildren = 1;
-      $templates->save($tpl);
-    } else {
-      // ensure the correct Fieldgroup is attached
-      if (!$tpl->fieldgroup || $tpl->fieldgroup->id !== $fg->id) {
-        $tpl->fieldgroup = $fg;
-        $templates->save($tpl);
-      }
-    }
-
-    // 3) Template file /site/templates/spl_account.php create (only when missing or forced)
-    $tplFile = rtrim($config->paths->templates, '/\\') . DIRECTORY_SEPARATOR . 'spl_account.php';
-    if ($writeFile || !is_file($tplFile)) {
-  $code = <<<'PHP'
-  <?php namespace ProcessWire;
-  /** @var \ProcessWire\Modules $modules */
-  $portal = $modules->get('StripePlCustomerPortal');
-  
-  $content = '
-  <div class="container py-5 mt-5">
-    <div class="row">
-      <div class="col-lg-10 mx-auto">
-        <div class="d-flex align-items-center justify-content-between mb-3">
-          <h1 class="mb-0">Hello, ' . $user->title . '</h1>
-          ' . $portal->renderHeaderButtons() . '
-        </div>
-      </div>
-    </div>
-  </div>';
-  
-  $content .= $portal->renderAccount('grid-all');
-  PHP;
-      if (is_dir($config->paths->templates)) {
-        @file_put_contents($tplFile, $code, LOCK_EX);
-        @chmod($tplFile, 0660);
-      }
-    }
-
-    // 4) Create page /account if it doesn't exist
-    $account = $pages->get('/account/');
-    if (!$account || !$account->id) {
-      $home = $pages->get(1); // Root
-      $p = new \ProcessWire\Page();
-      $p->template = $tpl;
-      $p->parent   = $home;
-      $p->name     = 'account';
-      $p->title    = 'Account';
-      $p->addStatus(Page::statusHidden);
-      try { $p->save(); } catch (\Throwable $e) { /* ignore */ }
-    } else {
-      // ensure the page uses the correct template
-      if ((string) $account->template !== 'spl_account') {
-        $account->setAndSave('template', $tpl);
-      }
-    }
-  }
-
+   private function ensureAccountTemplateAndPage(bool $writeFile = false): void {
+     $templates   = $this->wire('templates');
+     $fieldgroups = $this->wire('fieldgroups');
+     $pages       = $this->wire('pages');
+     $config      = $this->wire('config');
+     $roles       = $this->wire('roles');
+   
+     // --- 1) Fieldgroup: get or create
+     /** @var \ProcessWire\Fieldgroup|null $fg */
+     $fg = $fieldgroups->get('fg_spl_account');
+     if (!$fg || !$fg->id) {
+       $fg = new \ProcessWire\Fieldgroup();
+       $fg->name = 'fg_spl_account';
+       $fieldgroups->save($fg);
+     }
+   
+     // --- 2) Template: get or create
+     /** @var \ProcessWire\Template|null $tpl */
+     $tpl = $templates->get('spl_account');
+     if (!$tpl || !$tpl->id) {
+       $tpl = new \ProcessWire\Template();
+       $tpl->name       = 'spl_account';
+       $tpl->fieldgroup = $fg;
+       $tpl->noChildren = 1;
+       $tpl->useRoles   = 1;
+       $templates->save($tpl);
+   
+       // Default access setup (only applied on creation)
+       $guest    = $roles->get('guest');
+       $customer = $roles->get('customer');
+   
+       if ($guest && method_exists($tpl, 'removeRole')) $tpl->removeRole($guest, 'view');
+       if ($customer && method_exists($tpl, 'addRole'))  $tpl->addRole($customer, 'view');
+   
+       $tpl->set('noAccess', 2);        // redirect/render
+       $tpl->set('redirectLogin', '/'); // redirect target
+       $templates->save($tpl);
+     } else {
+       // Ensure correct fieldgroup is assigned, but do NOT override access
+       if (!$tpl->fieldgroup || $tpl->fieldgroup->id !== $fg->id) {
+         $tpl->fieldgroup = $fg;
+         $templates->save($tpl);
+       }
+     }
+   
+     // --- 3) Template file /site/templates/spl_account.php
+     $tplFile = rtrim($config->paths->templates, '/\\') . DIRECTORY_SEPARATOR . 'spl_account.php';
+     if ($writeFile || !is_file($tplFile)) {
+       $code = <<<'PHP'
+   <?php namespace ProcessWire;
+   /** @var \ProcessWire\Modules $modules */
+   $portal = $modules->get('StripePlCustomerPortal');
+   
+   $content = '
+   <div class="container py-5 mt-5">
+     <div class="row">
+       <div class="col-lg-10 mx-auto">
+         <div class="d-flex align-items-center justify-content-between mb-3">
+           <h1 class="mb-0">Hello, ' . $user->title . '</h1>
+           ' . $portal->renderHeaderButtons() . '
+         </div>
+       </div>
+     </div>
+   </div>';
+   
+   $content .= $portal->renderAccount('grid-all');
+   PHP;
+       if (is_dir($config->paths->templates)) {
+         @file_put_contents($tplFile, $code, LOCK_EX);
+         @chmod($tplFile, 0660);
+       }
+     }
+   
+     // --- 4) Page /account: create if missing
+     $account = $pages->get('/account/');
+     if (!$account || !$account->id) {
+       $home = $pages->get(1);
+       $p = new \ProcessWire\Page();
+       $p->template = $tpl;
+       $p->parent   = $home;
+       $p->name     = 'account';
+       $p->title    = 'Account';
+       $p->addStatus(\ProcessWire\Page::statusHidden);
+       try { $p->save(); } catch (\Throwable $e) { /* ignore */ }
+     } else {
+       if ((string)$account->template !== 'spl_account') {
+         $account->setAndSave('template', $tpl);
+       }
+     }
+   }
+      
   /**
    * Get names of product templates from SPL configuration.
    *
