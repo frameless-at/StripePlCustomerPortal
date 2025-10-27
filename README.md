@@ -69,6 +69,8 @@ You can also render the header buttons anywhere:
 $modules->get('StripePlCustomerPortal')->renderHeaderButtons('grid-all');
 ```
 
+All UI elements use regular Bootstrap classes and can be styled using your preferred method.
+
 ---
 
 ## 5) Product data used by the grid (important)
