@@ -1,6 +1,6 @@
 # StripePaymentLinks Customer Portal (ProcessWire)
 
-A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow –—no duplicate auth.
+A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow – no duplicate auth.
 
 ![Customer portal grid view](img/account_grid.png)
 
