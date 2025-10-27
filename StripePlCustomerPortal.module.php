@@ -365,6 +365,7 @@ class StripePlCustomerPortal extends WireData implements Module {
    * @param User $user
    * @return array
    */
+   /*
   public function getPurchasesData(User $user): array {
     $pages = $this->wire('pages');
     $now   = time();
@@ -432,6 +433,94 @@ class StripePlCustomerPortal extends WireData implements Module {
     usort($rows, fn($a, $b) => $b['purchase_ts'] <=> $a['purchase_ts']);
     return $rows;
   }
+*/
+
+/** Returns normalized purchases: one row per (purchase × product). */
+public function getPurchasesData(User $user): array {
+  $pages = $this->wire('pages');
+  $now   = time();
+
+  // Collect all product IDs → load once
+  $pids = [];
+  foreach ($user->spl_purchases as $item) {
+    $pids = array_merge($pids, array_map('intval', (array) $item->meta('product_ids')));
+  }
+  $pids = array_values(array_unique(array_filter($pids)));
+  $byId = [];
+  if ($pids) {
+    foreach ($pages->find('id=' . implode('|', $pids) . ', include=all') as $p) $byId[(int)$p->id] = $p;
+  }
+
+  $rows = [];
+  foreach ($user->spl_purchases as $item) {
+    $ts   = (int) $item->created;
+    $date = $ts ? date('Y-m-d H:i', $ts) : '';
+    $map  = (array) $item->meta('period_end_map');
+
+    foreach ((array) $item->meta('product_ids') as $pidRaw) {
+      $pid = (int) $pidRaw;
+      $p   = $byId[$pid] ?? null;
+      if (!$p || !$p->id) continue;
+
+      // Derive status/access
+      $endRaw   = $map[(string)$pid] ?? null;
+      $paused   = array_key_exists($pid . '_paused', $map);
+      $canceled = array_key_exists($pid . '_canceled', $map);
+
+      $statusKey   = '';
+      $statusUntil = null;
+      $isActive    = null;
+
+      if ($canceled) {
+        $statusKey = 'canceled';
+        if (is_numeric($endRaw)) $statusUntil = (int) $endRaw;
+        $isActive = false;
+      } elseif ($paused) {
+        $statusKey = 'paused';
+        $isActive  = false;
+      } elseif (is_numeric($endRaw)) {
+        $statusUntil = (int) $endRaw;
+        $isActive    = ($statusUntil >= $now);
+        $statusKey   = $isActive ? 'active_until' : 'expired_on';
+      } else {
+        // No period end → treat as timeless access (one-time/lifetime)
+        $statusKey = 'active';
+        $isActive  = true;
+      }
+
+      // Category/label for tabs
+      $category = (string)($p->get('product_category') ?: $p->template->label ?: $p->template->name);
+
+      // First available image field (any name)
+      $thumbUrl = '';
+      foreach ($p->fields as $f) {
+        if ($f->type instanceof \ProcessWire\FieldtypeImage) {
+          $imgs = $p->get($f->name);
+          if ($imgs && $imgs->count()) {
+            $thumbUrl = $imgs->first()->size(800, 600)->url;
+          }
+          break;
+        }
+      }
+
+      $rows[] = [
+        'purchase_ts'   => $ts,
+        'purchase_date' => $date,
+        'product_id'    => (int) $p->id,
+        'product_title' => (string) $p->title,
+        'product_url'   => (bool) $p->get('requires_access') ? $p->httpUrl : '',
+        'thumb_url'     => $thumbUrl,
+        'category'      => $category,
+        'status_key'    => $statusKey,    // 'active'|'active_until'|'expired_on'|'paused'|'canceled'
+        'status_until'  => $statusUntil,  // unix ts or null
+        'is_active'     => $isActive,     // true|false
+      ];
+    }
+  }
+
+  usort($rows, fn($a,$b)=> $b['purchase_ts'] <=> $a['purchase_ts']);
+  return $rows;
+}
 
   /* ========================= Rendering ========================= */
 
@@ -567,7 +656,6 @@ class StripePlCustomerPortal extends WireData implements Module {
     }
     return '';
   }
-  
   /**
    * Render purchased products as cards (one card per product).
    *
@@ -578,51 +666,52 @@ class StripePlCustomerPortal extends WireData implements Module {
   public function renderPurchasesGrid(User $user, array $opts = []): string {
     $rows = $this->getPurchasesData($user);
     if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-
-    // once-only CSS for overlay title
-    $css = '<style id="spl-card-overlay-css">
-.spl-card{position:relative;overflow:hidden;border:0}
-.spl-card .card-img-top{display:block;width:100%;height:auto}
-.spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
-  background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
-.spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
-  text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
-/* keep existing gray variant usable */
-.spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
-.spl-card.spl-gray:hover .card-img-top{filter:none}
-</style>';
-
-    $out = $css;
-
-    $badge = function(array $r): string {
-      switch ($r['status_key']) {
-        case 'active_until':
-          return '<span class="badge text-bg-success rounded-pill shadow-sm">'
-               . $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', $r['status_until'])])
-               . '</span>';
-        case 'expired_on':
-          return '<span class="badge text-bg-secondary rounded-pill shadow-sm">'
-               . $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', $r['status_until'])])
-               . '</span>';
-        case 'paused':
-          return '<span class="badge text-bg-warning rounded-pill shadow-sm">' . $this->tLocal('status.paused') . '</span>';
-        case 'canceled':
-          return '<span class="badge text-bg-danger rounded-pill shadow-sm">' . $this->tLocal('status.canceled') . '</span>';
-        default:
-          return '';
-      }
-    };
-
-    $seen = [];
+  
+    // Keep: one-time purchases ("active") and subscriptions with active access ("active_until" + is_active=true).
+    // Drop: paused, canceled, expired, anything else.
+    $seen   = [];
+    $usable = [];
     foreach ($rows as $r) {
+      $keep =
+        ($r['status_key'] === 'active') ||
+        ($r['status_key'] === 'active_until' && $r['is_active'] === true);
+  
+      if (!$keep) continue;
+  
       $pid = (int) $r['product_id'];
-      if (isset($seen[$pid])) continue;
+      if (isset($seen[$pid])) continue; // de-dupe per product
       $seen[$pid] = true;
-
+  
+      $usable[] = $r;
+    }
+    if (!$usable) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+  
+    // CSS once
+    $css = '<style id="spl-card-overlay-css">
+  .spl-card{position:relative;overflow:hidden;border:0}
+  .spl-card .card-img-top{display:block;width:100%;height:auto}
+  .spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
+    background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
+  .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
+    text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  </style>';
+  
+    // Badge only for active_until (date). One-time "active" has no badge.
+    $badge = function(array $r): string {
+      if ($r['status_key'] === 'active_until' && !empty($r['status_until'])) {
+        return '<span class="badge text-bg-success rounded-pill shadow-sm">'
+             . $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', (int)$r['status_until'])])
+             . '</span>';
+      }
+      return '';
+    };
+  
+    $out = $css;
+    foreach ($usable as $r) {
       $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
       $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
       $anchor = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
-
+  
       $out .= '
         <div class="col-12 col-sm-6 col-lg-4">
           <div class="card spl-card shadow-sm">
@@ -638,7 +727,7 @@ class StripePlCustomerPortal extends WireData implements Module {
     }
     return $out;
   }
-
+  
   /**
    * Grid: purchased products on top (using renderPurchasesGrid), below "not yet purchased" in gray.
    *
@@ -646,29 +735,41 @@ class StripePlCustomerPortal extends WireData implements Module {
    * @return string
    */
   public function renderPurchasesGridAll(User $user): string {
-    // top: owned cards with overlay
+    // 1) active/purchased cards
     $ownedHtml = $this->renderPurchasesGrid($user);
-
-    // IDs of purchased products
-    $ownedRows = $this->getPurchasesData($user);
-    $ownedIds  = [];
-    foreach ($ownedRows as $r) $ownedIds[(int)$r['product_id']] = true;
-
-    // all access-gated products → filter out owned ones
+  
+    // 2) collect active-owned product IDs
+    $rows = $this->getPurchasesData($user);
+    $ownedActiveIds = [];
+    foreach ($rows as $r) {
+      if ($r['status_key'] === 'active' ||
+         ($r['status_key'] === 'active_until' && $r['is_active'] === true)) {
+        $ownedActiveIds[(int) $r['product_id']] = true;
+      }
+    }
+  
+    // 3) find all gated products that are NOT actively owned
     $all = $this->findAccessProducts();
     $unowned = [];
-    foreach ($all as $p) if (!isset($ownedIds[(int)$p->id])) $unowned[] = $p;
+    foreach ($all as $p) {
+      if (!isset($ownedActiveIds[(int) $p->id])) $unowned[] = $p;
+    }
     if (!$unowned) return $ownedHtml;
-
-    $out = $ownedHtml;
-
+  
+    // 4) CSS only for gray overlay
+    $css = '<style id="spl-gray-cards">
+  .spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
+  .spl-card.spl-gray:hover .card-img-top{filter:none;opacity:1}
+  </style>';
+  
+    $out = $ownedHtml . $css;
+  
+    // 5) render unowned cards in gray
     foreach ($unowned as $p) {
       $title = htmlspecialchars((string) $p->title, ENT_QUOTES);
-      $url   = $p->httpUrl;
-      $img   = ($p->hasField('images') && $p->images->count())
-             ? '<img class="card-img-top" src="' . htmlspecialchars($p->images->first()->size(800,600)->url, ENT_QUOTES) . '" alt="">'
-             : '';
-
+      $thumb = $this->productThumbUrl($p);
+      $img   = $thumb ? '<img class="card-img-top" src="' . htmlspecialchars($thumb, ENT_QUOTES) . '" alt="">' : '';
+  
       $out .= '
         <div class="col-12 col-sm-6 col-lg-4">
           <div class="card spl-card spl-gray shadow-sm">
@@ -677,12 +778,13 @@ class StripePlCustomerPortal extends WireData implements Module {
               <div class="spl-grad"></div>
               <div class="spl-title"><h3 class="m-0">' . $title . '</h3></div>
             </div>
-            <a href="' . htmlspecialchars($url, ENT_QUOTES) . '" class="stretched-link"></a>
+            <a href="' . htmlspecialchars($p->httpUrl, ENT_QUOTES) . '" class="stretched-link"></a>
           </div>
         </div>';
     }
+  
     return $out;
-  }
+  }  
 
   /**
    * Render purchases as a compact table.
