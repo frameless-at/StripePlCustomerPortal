@@ -2,7 +2,7 @@
 
 A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow –—no duplicate auth.
 
-![Customer portal grid view](img/account_grid.jpeg)
+![Customer portal grid view](img/account_grid.png)
 
 ---
 
@@ -99,13 +99,13 @@ The module also overrides SPL’s `t()` **only** when the intended URL points to
 ## 7) Screenshots
 
 **Grid view**  
-![Grid](img/account_grid.jpeg)
+![Grid](img/account_grid.png)
 
 **Table view**  
-![Table](img/account_table.jpeg)
+![Table](img/account_table.png)
 
 **Edit profile modal**  
-![Edit data](img/account_edit-data.jpeg)
+![Edit data](img/account_edit-data.png)
 
 ---
 
