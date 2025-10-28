@@ -26,7 +26,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.2',
+      'version'  => '0.1.3',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'autoload' => true,
