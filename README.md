@@ -73,7 +73,28 @@ All UI elements use regular Bootstrap classes and can be styled using your prefe
 
 ---
 
-## 5) Product data used by the grid (important)
+## 5) Stripe Billing Portal
+
+In the **table view** of `/account/`, each purchase shows a button that opens
+the **Stripe Billing Portal** for that purchase, using the stored `customer_id`
+from the purchase’s `stripe_session` meta.
+
+- No `stripe_customer_id` user field required
+- Works even when purchases were made via external Stripe Payment Links
+- Users can view/download invoices and manage payment methods/subscriptions
+
+Make sure the Stripe **Billing Portal** is enabled in your Stripe Dashboard  
+(Settings → Billing → Customer Portal), otherwise the portal links will not work.
+
+Example view (Stripe Billing Portal):
+
+![Stripe Billing Portal](img/stripe_purchases.png)
+
+The button label is fully translatable (`button.invoice`).
+
+---
+
+## 6) Product data used by the grid (important)
 
 The grid is built from the user’s SPL purchases and your product pages. For **each product**:
 
@@ -86,14 +107,14 @@ The grid is built from the user’s SPL purchases and your product pages. For **
 
 ---
 
-## 6) Internationalization (i18n)
+## 7) Internationalization (i18n)
 
 All UI texts live in the module’s `i18n()` and are picked up by ProcessWire’s Language tools.
 The module also overrides SPL’s `t()` **only** when the intended URL points to `/account/`, so you can present custom login modal texts for the portal flow.
 
 ---
 
-## 7) Screenshots
+## 8) Screenshots
 
 **Grid view**  
 ![Grid](img/account_grid.png)
@@ -106,13 +127,13 @@ The module also overrides SPL’s `t()` **only** when the intended URL points to
 
 ---
 
-## 8) Uninstall
+## 9) Uninstall
 
 - Removes `/account/` page and `spl_account` template.
 - Leaves `/site/templates/spl_account.php` in place (in case you customized it).
 
 ---
 
-## 9) License
+## 10) License
 
 MIT.
