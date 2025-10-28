@@ -57,6 +57,8 @@ The file `/site/templates/spl_account.php` is created for you and calls the modu
 - the **grid** of purchased products (and optional “not yet purchased” items)
 - a profile **edit modal** (AJAX + CSRF)
 
+![Edit data](img/account_edit-data.png)
+
 Switch views (grid / table / grid-all) via querystring:
 
 - `/account/?view=grid-all` (all products, not yet purchased products greyéd out, default used by the template)
@@ -114,25 +116,16 @@ The grid is built from the user’s SPL purchases and your product pages. For **
 All UI texts live in the module’s `i18n()` and are picked up by ProcessWire’s Language tools.
 The module also overrides SPL’s `t()` **only** when the intended URL points to `/account/`, so you can present custom login modal texts for the portal flow.
 
----
-
-## 8) Screenshots
-
-**Grid view**  
-![Grid](img/account_grid.png)
-
-**Edit profile modal**  
-![Edit data](img/account_edit-data.png)
 
 ---
 
-## 9) Uninstall
+## 8) Uninstall
 
 - Removes `/account/` page and `spl_account` template.
 - Leaves `/site/templates/spl_account.php` in place (in case you customized it).
 
 ---
 
-## 10) License
+## 9) License
 
 MIT.
