@@ -71,6 +71,10 @@ $modules->get('StripePlCustomerPortal')->renderHeaderButtons('grid-all');
 
 All UI elements use regular Bootstrap classes and can be styled using your preferred method.
 
+
+**Table view**  
+![Table](img/account_table.png)
+
 ---
 
 ## 5) Stripe Billing Portal
@@ -118,9 +122,6 @@ The module also overrides SPL’s `t()` **only** when the intended URL points to
 
 **Grid view**  
 ![Grid](img/account_grid.png)
-
-**Table view**  
-![Table](img/account_table.png)
 
 **Edit profile modal**  
 ![Edit data](img/account_edit-data.png)
