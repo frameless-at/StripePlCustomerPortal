@@ -90,8 +90,6 @@ Example view (Stripe Billing Portal):
 
 ![Stripe Billing Portal](img/stripe_purchases.png)
 
-The button label is fully translatable (`button.invoice`).
-
 ---
 
 ## 6) Product data used by the grid (important)
