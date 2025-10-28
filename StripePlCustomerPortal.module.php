@@ -4,6 +4,8 @@ use ProcessWire\Page;
 use ProcessWire\User;
 use ProcessWire\WireData;
 use ProcessWire\Module;
+use Stripe\StripeClient;
+use Stripe\Exception\ApiErrorException;
 
 /**
  * StripePlCustomerPortal
@@ -150,6 +152,186 @@ class StripePlCustomerPortal extends WireData implements Module {
     }
     // Leave the physical file untouched (may have been modified).
   }
+    
+  /**
+   * Create a Stripe Billing Portal session for the current user and redirect.
+   * - Lives entirely in StripePlCustomerPortal (no SPL changes).
+   * - Uses SPL's stored secret key if present; optional local override.
+   * - Read-only; creates a session server-side and 302-redirects to Stripe.
+   *
+   * Trigger it by linking to: /account/?action=billing_portal
+   */
+
+/** Create a Stripe Billing Portal session (prefers ?customer=, else falls back). */
+   protected function handleBillingPortalRedirect(): void {
+   
+       $wire    = $this->wire();
+       $user    = $wire->user;
+       $input   = $wire->input;
+       $session = $wire->session;
+       $log     = $wire->log;
+       $config  = $wire->config;
+   
+       // must be logged in
+       if(!$user || !$user->id) {
+           $login = $this->loginUrl() ?: $config->urls->root;
+           $session->redirect($login);
+           return;
+       }
+   
+       // --- 1) Prefer explicit ?customer= if present and valid ---
+       $cidParam = trim((string)$input->get->text('customer'));
+       $customerId = null;
+       if ($cidParam !== '' && preg_match('~^cus_[A-Za-z0-9]+$~', $cidParam)) {
+           $customerId = $cidParam;
+       }
+   
+       // --- 2) Fallback: derive from the user's purchases (first match) ---
+       if (!$customerId && $user->hasField('spl_purchases')) {
+           foreach ($user->spl_purchases as $purchase) {
+               $meta = (array) $purchase->meta('stripe_session');
+               if (!empty($meta['customer'])) {
+                   $raw = $meta['customer'];
+                   if (is_string($raw)) {
+                       $customerId = $raw;
+                   } elseif (is_array($raw) && isset($raw['id'])) {
+                       $customerId = (string)$raw['id'];
+                   } elseif (is_object($raw) && isset($raw->id)) {
+                       $customerId = (string)$raw->id;
+                   }
+                   if ($customerId) break;
+               }
+           }
+       }
+   
+       if(!$customerId) {
+           $log->error("Portal billing_portal: NO CUSTOMER ID (user={$user->id})");
+           $this->emitApiError(403, 'No Stripe customer ID found.');
+       }
+   
+       // resolve secret
+       $secret = $this->detectStripeSecretFromSpl();
+       if($secret === '') {
+           $this->emitApiError(500, 'Stripe secret not configured.');
+       }
+   
+       // load Stripe SDK if present
+       $sdk = $this->wire('config')->paths->siteModules . 'StripePaymentLinks/vendor/stripe-php/init.php';
+       if (is_file($sdk)) {
+           require_once $sdk;
+       }
+   
+       // --- sanitize/normalize return_url to absolute and same host ---
+       $raw     = trim((string)$input->get->text('return'));
+       $host    = (string)$config->httpHost;
+       $scheme  = $config->https ? 'https://' : 'http://';
+       $default = $scheme . $host . $config->urls->root . 'account/';
+   
+       if ($raw === '' || !preg_match('~^https?://~i', $raw)) {
+           if ($raw !== '' && str_starts_with($raw, '/')) {
+               $returnUrl = $scheme . $host . $raw;
+           } else {
+               $returnUrl = $default;
+           }
+       } else {
+           $returnUrl = $raw;
+       }
+       try {
+           $ru = parse_url($returnUrl);
+           $sameHost = !empty($ru['host']) && strcasecmp($ru['host'], $host) === 0;
+           if (!$sameHost || !filter_var($returnUrl, FILTER_VALIDATE_URL)) {
+               $returnUrl = $default;
+           }
+       } catch (\Throwable $e) {
+           $returnUrl = $default;
+       }
+   
+       // --- create portal session ---
+       try {
+           $stripe = new \Stripe\StripeClient($secret);
+           $bp = $stripe->billingPortal->sessions->create([
+               'customer'   => $customerId,
+               'return_url' => $returnUrl,
+           ]);
+   
+           if (empty($bp->url)) {
+               $log->error("Portal billing_portal: empty session URL (user={$user->id})");
+               $this->emitApiError(502, 'Unable to open Stripe customer portal.');
+           }
+   
+           $session->redirect((string)$bp->url);
+           return;
+   
+       } catch (\Throwable $e) {
+           $this->emitApiError(500, $e->getMessage());
+       }
+   }
+   
+   /* Try to read the Stripe secret key from SPL module config.
+   * Falls back to empty string if not found.
+   */
+  protected function detectStripeSecretFromSpl(): string {
+      $modules = $this->wire('modules');
+  
+      // 1) Try SPL config directly
+      $splCfg = is_object($modules) ? (array)$modules->getConfig('StripePaymentLinks') : [];
+      foreach($splCfg as $v) {
+          $v = (string)$v;
+          if(str_starts_with($v, 'sk_live_') || str_starts_with($v, 'sk_test_')) {
+              return $v;
+          }
+      }
+  
+      // 2) Try instance property (if SPL exposes it via public get)
+      $spl = $modules ? $modules->get('StripePaymentLinks') : null;
+      if($spl) {
+          // If your SPL exposes a getter like $spl->getSecretKey(), use it here instead.
+          if(method_exists($spl, 'getSecretKey')) {
+              $k = (string)$spl->getSecretKey();
+              if($k !== '') return $k;
+          }
+      }
+  
+      return '';
+  }
+  
+  /**
+   * Attempt to include Stripe SDK from SPL's vendor path (if not globally loaded).
+   */
+  protected function attemptLoadStripeSdk(): void {
+      $paths = $this->wire('config')->paths;
+      $candidates = [
+          $paths->siteModules . 'StripePaymentLinks/vendor/autoload.php',
+          $paths->root . 'vendor/autoload.php', // in case of a project-wide composer
+      ];
+      foreach($candidates as $file) {
+          if(is_file($file)) {
+              @require_once $file;
+              if(class_exists(\Stripe\StripeClient::class)) return;
+          }
+      }
+  }
+  
+  /**
+   * Small helper to emit a minimal JSON error (used by the handler on failure).
+   * Keeps output consistent with front-end expectations.
+   */
+  protected function emitApiError(int $status, string $message): void {
+      http_response_code($status);
+      header('Content-Type: application/json; charset=utf-8');
+      echo json_encode(['ok' => false, 'error' => $message], JSON_UNESCAPED_UNICODE);
+      if(function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+      exit;
+  }
+  
+  /**
+   * Resolve a login URL (used if someone hits the handler while logged out).
+   * Replace with your own if you already have a method for this.
+   */
+  protected function loginUrl(): ?string {
+      $p = $this->wire('pages')->get('template=admin, name=login');
+      return $p && $p->id ? $p->url : null;
+  }
 
   /**
    * Helper: main StripePaymentLinks module instance.
@@ -208,6 +390,7 @@ class StripePlCustomerPortal extends WireData implements Module {
       'link.login'   => $this->_('Customer Login'),
       'link.logout'  => $this->_('Logout'),
       'link.account' => $this->_('My Account'),
+      'link.invoice' => $this->_('Billing'),
     ];
   }
 
@@ -359,82 +542,59 @@ class StripePlCustomerPortal extends WireData implements Module {
     return array_values(array_unique(array_filter(array_map([$san, 'name'], $raw))));
   }
 
-  /**
-   * Returns normalized purchases: one row per (purchase × product).
+ /**
+  * Build a localized status label for a purchases row.
+  * Accepts the array row from getPurchasesData().
+  */
+/**
+   * Build a consistent badge HTML for a purchase row (used in grid AND table).
    *
-   * @param User $user
-   * @return array
+   * @param array $r A row from getPurchasesData()
+   * @return string HTML <span>…</span>
    */
-   /*
-  public function getPurchasesData(User $user): array {
-    $pages = $this->wire('pages');
-    $now   = time();
-
-    // Collect all product IDs → load once
-    $pids = [];
-    foreach ($user->spl_purchases as $item) {
-      $pids = array_merge($pids, array_map('intval', (array) $item->meta('product_ids')));
-    }
-    $pids = array_values(array_unique(array_filter($pids)));
-    $byId = [];
-    if ($pids) {
-      foreach ($pages->find('id=' . implode('|', $pids) . ', include=all') as $p) $byId[(int)$p->id] = $p;
-    }
-
-    $rows = [];
-    foreach ($user->spl_purchases as $item) {
-      $ts   = (int) $item->created;
-      $date = $ts ? date('Y-m-d H:i', $ts) : '';
-      $map  = (array) $item->meta('period_end_map');
-      foreach ((array) $item->meta('product_ids') as $pidRaw) {
-        $pid = (int) $pidRaw;
-        $p   = $byId[$pid] ?? null;
-        if (!$p || !$p->id) continue;
-
-        // Status
-        $endRaw   = $map[(string)$pid] ?? null;
-        $paused   = array_key_exists($pid . '_paused', $map);
-        $canceled = array_key_exists($pid . '_canceled', $map);
-        $statusKey = ''; $statusUntil = null; $isActive = null;
-        if ($canceled) {
-          $statusKey = 'canceled';
-          if (is_numeric($endRaw)) $statusUntil = (int) $endRaw;
-          $isActive = false;
-        } elseif ($paused) {
-          $statusKey = 'paused'; $isActive = false;
-        } elseif (is_numeric($endRaw)) {
-          $statusUntil = (int) $endRaw;
-          $isActive = $statusUntil >= $now;
-          $statusKey = $isActive ? 'active_until' : 'expired_on';
-        }
-
-        // Category/Tag for tabs (configurable: template, field, parent)
-        $category = (string) ($p->get('product_category') ?: $p->template->label ?: $p->template->name);
-
-        // Thumb (auto: first available image field of type FieldtypeImage)
-        $thumbUrl = $this->productThumbUrl($p);
-
-        $rows[] = [
-          'purchase_ts'   => $ts,
-          'purchase_date' => $date,
-          'product_id'    => (int) $p->id,
-          'product_title' => (string) $p->title,
-          'product_url'   => (bool) $p->get('requires_access') ? $p->httpUrl : '',
-          'thumb_url'     => $thumbUrl,
-          'category'      => $category,
-          'status_key'    => $statusKey,
-          'status_until'  => $statusUntil,
-          'is_active'     => $isActive,
-        ];
+  private function buildStatusLabel(array $r): string {
+  
+      $key  = $r['status_key'] ?? '';
+      $date = $r['status_until'] ?? null;
+  
+      switch ($key) {
+  
+          case 'active_until':
+              return sprintf(
+                  '<span class="badge text-bg-success rounded-pill shadow-sm">%s</span>',
+                  $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', (int)$date)])
+              );
+  
+          case 'expired_on':
+              return sprintf(
+                  '<span class="badge text-bg-secondary rounded-pill">%s</span>',
+                  $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', (int)$date)])
+              );
+  
+          case 'paused':
+              return '<span class="badge text-bg-warning rounded-pill">'
+                   . $this->tLocal('status.paused')
+                   . '</span>';
+  
+          case 'canceled':
+              return $date
+                  ? sprintf(
+                        '<span class="badge text-bg-danger rounded-pill">%s</span>',
+                        $this->tLocalFmt('status.canceled_until', ['{date}' => date('Y-m-d', (int)$date)])
+                    )
+                  : '<span class="badge text-bg-danger rounded-pill">'
+                    . $this->tLocal('status.canceled')
+                    . '</span>';
+  
+          case 'active':
+              return '<span class="badge text-bg-success rounded-pill">'
+                   . $this->tLocal('status.active')
+                   . '</span>';
+  
+          default:
+              return '';
       }
-    }
-
-    // Newest first
-    usort($rows, fn($a, $b) => $b['purchase_ts'] <=> $a['purchase_ts']);
-    return $rows;
-  }
-*/
-
+  } 
 /** Returns normalized purchases: one row per (purchase × product). */
 public function getPurchasesData(User $user): array {
   $pages = $this->wire('pages');
@@ -544,7 +704,13 @@ public function getPurchasesData(User $user): array {
       // Return a slim wrapper — content will come after login
       return $this->wrapContainer('<div class="my-5"></div>');
     }
-
+    
+    // Early action handling (before rendering any markup)
+    if ($this->wire('input')->get->text('action') === 'billing_portal') {
+      $this->handleBillingPortalRedirect();
+      return ''; // ensure string return type after redirect attempt
+    }
+    
     // explicit view parameter OR ?view=table override
     $viewParam = $this->wire('input')->get->text('view');
     if ($viewParam) $view = $viewParam;
@@ -576,18 +742,18 @@ public function getPurchasesData(User $user): array {
    * @param array $opts
    * @return string
    */
-  public function renderEditButton(array $opts = []): string {
-    $label  = $opts['label'] ?? $this->tLocal('button.edit');
-    $class  = trim('btn btn-primary d-flex align-items-center ' . ($opts['class'] ?? ''));
-    $idAttr = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
-
-    return '<button type="button"' . $idAttr . ' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
-         . ' data-bs-toggle="modal" data-bs-target="#profileModal">'
+ public function renderEditButton(array $opts = []): string {
+     $label  = $opts['label'] ?? $this->tLocal('button.edit');
+     $class  = trim('btn btn-primary d-flex align-items-center ' . ($opts['class'] ?? ''));
+     $idAttr = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
+   
+     return
+       '<button type="button"' . $idAttr . ' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
+       . ' data-bs-toggle="modal" data-bs-target="#profileModal">'
          . '<i class="bi bi-pencil fs-6 d-inline d-md-none"></i>'
          . '<span class="d-none d-md-inline ms-1">' . htmlspecialchars($label, ENT_QUOTES) . '</span>'
-         . '</button>';
-  }
-
+       . '</button>';
+   }
   /**
    * Renders the top-right button group: view switcher + edit button.
    *
@@ -663,6 +829,7 @@ public function getPurchasesData(User $user): array {
    * @param array $opts
    * @return string
    */
+   /*
   public function renderPurchasesGrid(User $user, array $opts = []): string {
     $rows = $this->getPurchasesData($user);
     if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
@@ -727,7 +894,63 @@ public function getPurchasesData(User $user): array {
     }
     return $out;
   }
+  */
+  // CHANGED: use buildStatusLabel() for the badge text.
+  public function renderPurchasesGrid(User $user, array $opts = []): string {
+    $rows = $this->getPurchasesData($user);
+    if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
   
+    $seen = []; $usable = [];
+    foreach ($rows as $r) {
+      $keep = ($r['status_key'] === 'active') ||
+              ($r['status_key'] === 'active_until' && $r['is_active'] === true);
+      if (!$keep) continue;
+      $pid = (int)$r['product_id'];
+      if (isset($seen[$pid])) continue;
+      $seen[$pid] = true;
+      $usable[] = $r;
+    }
+    if (!$usable) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+  
+    $css = '<style id="spl-card-overlay-css">
+  .spl-card{position:relative;overflow:hidden;border:0}
+  .spl-card .card-img-top{display:block;width:100%;height:auto}
+  .spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
+    background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
+  .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
+    text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  </style>';
+  
+    $badge = function(array $r): string {
+      if (($r['status_key'] ?? '') === 'active_until' && !empty($r['status_until'])) {
+        return '<span class="badge text-bg-success rounded-pill shadow-sm">'
+             . $this->buildStatusLabel($r)
+             . '</span>';
+      }
+      return '';
+    };
+  
+    $out = $css;
+    foreach ($usable as $r) {
+      $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
+      $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
+      $anchor = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
+  
+      $out .= '
+        <div class="col-12 col-sm-6 col-lg-4">
+          <div class="card spl-card shadow-sm">
+            <div class="position-relative">
+              ' . $imgTag . '
+              <div class="spl-grad"></div>
+              <div class="spl-title"><h3 class="m-0">' . $title . '</h3></div>
+              <div class="position-absolute top-0 end-0 m-2">' . $badge($r) . '</div>
+            </div>
+            ' . $anchor . '
+          </div>
+        </div>';
+    }
+    return $out;
+  }
   /**
    * Grid: purchased products on top (using renderPurchasesGrid), below "not yet purchased" in gray.
    *
@@ -786,51 +1009,89 @@ public function getPurchasesData(User $user): array {
     return $out;
   }  
 
-  /**
-   * Render purchases as a compact table.
-   *
-   * @param User $user
-   * @return string
-   */
-  private function renderPurchasesTable(User $user): string {
-    $rows = $this->getPurchasesData($user);
-    if (!$rows) {
-      return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-    }
-
-    $out  = '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
-    $out .= '<div class="table-responsive"><table class="table table-sm align-middle">';
-    $out .= '<thead><tr>'
-          . '<th style="width:180px;">' . $this->tLocal('ui.table.head.date') . '</th>'
-          . '<th>' . $this->tLocal('ui.table.head.product') . '</th>'
-          . '<th style="width:220px;">' . $this->tLocal('ui.table.head.status') . '</th>'
-          . '</tr></thead><tbody>';
-
-    foreach ($rows as $r) {
-      $date = htmlspecialchars($r['purchase_date'], ENT_QUOTES);
-      $prod = $r['product_url']
-        ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '">' . htmlspecialchars($r['product_title'], ENT_QUOTES) . '</a>'
-        : htmlspecialchars($r['product_title'], ENT_QUOTES);
-
-      $status = '';
-      if ($r['status_key'] === 'active_until' && $r['status_until'])
-        $status = $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', $r['status_until'])]);
-      elseif ($r['status_key'] === 'expired_on' && $r['status_until'])
-        $status = $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', $r['status_until'])]);
-      elseif ($r['status_key'])
-        $status = $this->tLocal('status.' . $r['status_key']);
-
-      $out .= '<tr>'
-            . '<td style="white-space:nowrap;">' . $date . '</td>'
-            . '<td>' . $prod . '</td>'
-            . '<td>' . htmlspecialchars($status, ENT_QUOTES) . '</td>'
-            . '</tr>';
-    }
-
-    $out .= '</tbody></table></div>';
-    return $out;
-  }
-
+    /**
+     * Render purchases as a compact table. Each row builds a portal link whose
+     * `customer` param is taken from the *exact purchase item* that contains
+     * this product (reads meta['stripe_session']['customer'] of that item).
+     */
+     
+     /** Render purchases as a compact table (now using buildStatusLabel()). */
+private function renderPurchasesTable(User $user): string {
+     
+       $rows = $this->getPurchasesData($user);
+       if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+     
+       $resolveCustomerId = function(User $u, int $productId): ?string {
+         if (!$u->hasField('spl_purchases') || !$u->spl_purchases->count()) return null;
+     
+         $items = iterator_to_array($u->spl_purchases);
+         usort($items, fn($a,$b)=>((int)$b->created)<=>((int)$a->created));
+     
+         foreach ($items as $it) {
+           $meta = (array)$it->meta('stripe_session');
+           if (!$meta) continue;
+     
+           $pids = array_map('intval', (array)$it->meta('product_ids'));
+           if (!in_array($productId, $pids, true)) continue;
+     
+           $raw = $meta['customer'] ?? null;
+           if (is_string($raw) && $raw !== '') return $raw;
+           if (is_array($raw) && isset($raw['id'])) return (string)$raw['id'];
+           if (is_object($raw) && isset($raw->id)) return (string)$raw->id;
+         }
+         return null;
+       };
+     
+       $accountUrl = $this->wire('pages')->get('template=spl_account')->url
+                   ?: $this->wire('config')->urls->root . 'account/';
+       $returnUrl  = $this->wire('page')->httpUrl;
+     
+       $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+     
+       $out  = '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
+       $out .= '<div class="table-responsive"><table class="table table-sm align-middle">';
+       $out .= '<thead><tr>'
+             . '<th style="width:180px;">' . $this->tLocal('ui.table.head.date') . '</th>'
+             . '<th>'                      . $this->tLocal('ui.table.head.product') . '</th>'
+             . '<th style="width:200px;">' . $this->tLocal('ui.table.head.status') . '</th>'
+             . '<th style="width:100px;"></th>'
+             . '</tr></thead><tbody>';
+     
+       foreach ($rows as $r) {
+     
+         $cid = $resolveCustomerId($user, (int)$r['product_id']);
+     
+         $invoiceLink = '';
+         if ($cid) {
+           $bp = $accountUrl
+               . '?action=billing_portal'
+               . '&customer=' . rawurlencode($cid)
+               . '&return='   . rawurlencode($returnUrl);
+     
+           $invoiceLink = '<a class="btn btn-sm btn-light" target="_blank" '
+                        . 'href="' . $h($bp) . '">'
+                        . $h($this->tLocal('link.invoice'))
+                        . '</a>';
+         }
+     
+         $prodHtml = $r['product_url']
+           ? '<a href="' . $h($r['product_url']) . '">' . $h($r['product_title']) . '</a>'
+           : $h($r['product_title']);
+     
+         // ✔︎ Einheitliche Status-Erzeugung über i18n
+         $status = $this->buildStatusLabel($r);
+     
+         $out .= '<tr>'
+               . '<td style="white-space:nowrap;">' . $h($r['purchase_date']) . '</td>'
+               . '<td>' . $prodHtml . '</td>'
+               . '<td>' . $status . '</td>'
+               . '<td style="text-align:right">' . $invoiceLink . '</td>'
+               . '</tr>';
+       }
+     
+       $out .= '</tbody></table></div>';
+       return $out;
+     }
   /**
    * Resolve absolute paths to SPL UI bits (ModalRenderer + modal view).
    *
