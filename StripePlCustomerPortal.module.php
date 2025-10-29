@@ -46,68 +46,67 @@ class StripePlCustomerPortal extends WireData implements Module {
    * @return void
    */
   public function init(): void {
-    $this->ensureAccountTemplateAndPage();
-
-    $this->addHookBefore('Page::render', function(\ProcessWire\HookEvent $e) {
-      $input   = $this->wire('input');
-      $session = $this->wire('session');
-      $config  = $this->wire('config');
-
-      if ($input->get('spl_logout')) {
-        $session->logout();
-        $session->remove('pl_open_login');
-        $session->remove('pl_intended_url');
-        $session->redirect($config->urls->root); // after logout redirect to /
-      }
-    });
-
-    // API endpoint hook for profile updates
-    $this->addHook('/stripepaymentlinks/api', function(\ProcessWire\HookEvent $e) {
-      $this->handleProfileUpdate($e);
-    });
-
-    // If user not logged in and the account page requested opening the login modal,
-    // inject JS after Page::render to open SPL's login modal automatically.
-    $this->addHookAfter('Page::render', function(\ProcessWire\HookEvent $e) {
-      $session = $this->wire('session');
-      $user    = $this->wire('user');
-      $page    = $this->wire('page');
-
-      if ($user->isLoggedin()) {
-        $session->remove('pl_open_login');
-        return;
-      }
-
-      // Only automatically open on /account/
-      if ($page->path !== '/account/' || !$session->get('pl_open_login')) return;
-
-      $html = (string) $e->return;
-      $session->remove('pl_open_login'); // one-time flag
-
-      if (strpos($html, 'id="loginModal"') !== false) {
-        $js = '<script>
-        document.addEventListener("DOMContentLoaded", function () {
-          var el = document.getElementById("loginModal");
-          if (el && window.bootstrap) {
-            bootstrap.Modal.getOrCreateInstance(el).show();
-          }
-        });
-        </script>';
-        $e->return = preg_replace('~</body>~i', $js . '</body>', $html, 1);
-      }
-    });
-
-    // Override SPL texts for login modal when the intended URL is /account/
-    $this->addHookAfter('StripePaymentLinks::t', function($e) {
-      $session  = $this->wire('session');
-      $intended = (string) $session->get('pl_intended_url'); // set in renderAccount()
-      if ($intended === '' || strpos($intended, '/account/') === false) return;
-
-      $key = (string) $e->arguments(0);
-      if ($key === 'modal.login.title') { $e->return = $this->tLocal('modal.login.title'); return; }
-      if ($key === 'modal.login.body')  { $e->return = $this->tLocal('modal.login.body');  return; }
-    });
-  }
+     $this->ensureAccountTemplateAndPage();
+   
+     $this->addHookBefore('Session::redirect', function(HookEvent $e) {
+       if($this->user->isLoggedin()) return;
+   
+       $sess = $this->wire()->session;
+       $cfg  = $this->wire()->config;
+       $input = $this->wire()->input;
+   
+       if ($input->get('spl_logout')) { return; }
+       
+       $req  = rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?? '/', '/') . '/';
+       $to   = rtrim(parse_url((string)$e->arguments(0), PHP_URL_PATH) ?? '/', '/') . '/';
+       $root = rtrim($cfg->urls->root, '/') . '/';
+   
+       if($req === '/account/' && $to === $root) {
+         $sess->set('pl_open_login', 1);
+         $sess->set('pl_intended_url',
+           ($cfg->https ? 'https://' : 'http://') . $cfg->httpHost . $cfg->urls->root . 'account/'
+         );
+       }
+     });
+   
+     $this->addHookAfter('Page::render', function(HookEvent $e) {
+       $sess = $this->wire()->session;
+       if($this->user->isLoggedin() || !$sess->get('pl_open_login')) return;
+       $sess->remove('pl_open_login');
+   
+       $html = (string)$e->return;
+       if(stripos($html, 'id="loginModal"') === false) return;
+   
+       $e->return = preg_replace(
+         '~</body>~i',
+         '<script>document.addEventListener("DOMContentLoaded",()=>{let m=document.getElementById("loginModal");if(m&&window.bootstrap)bootstrap.Modal.getOrCreateInstance(m).show();});</script></body>',
+         $html,
+         1
+       );
+     });
+   
+     $this->addHookBefore('Page::render', function(HookEvent $e) {
+       $input = $this->wire('input');
+       if(!$input->get('spl_logout')) return;
+       $s = $this->wire('session');
+       $s->logout();
+       $s->remove('pl_open_login');
+       $s->remove('pl_intended_url');
+       $this->wire('session')->redirect($this->wire('config')->urls->root);
+     });
+   
+     $this->addHook('/stripepaymentlinks/api', function(HookEvent $e) {
+       $this->handleProfileUpdate($e);
+     });
+   
+     $this->addHookAfter('StripePaymentLinks::t', function(HookEvent $e) {
+       $intended = (string)$this->wire('session')->get('pl_intended_url');
+       if($intended === '' || strpos($intended, '/account/') === false) return;
+       $key = (string)$e->arguments(0);
+       if ($key === 'modal.login.title') { $e->return = $this->tLocal('modal.login.title'); return; }
+       if ($key === 'modal.login.body')  { $e->return = $this->tLocal('modal.login.body');  return; }
+     });
+   }
 
   /**
    * Create template, template file and page on install.
