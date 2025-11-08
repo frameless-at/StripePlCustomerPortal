@@ -105,9 +105,9 @@ The grid is built from the user’s SPL purchases and your product pages. For **
 - **Title**: page title
 - **URL**: the whole grid item (card) is linked to the page URL
 - **Status badge**: only visible if product is a subscription, derived from SPL’s period/paused/canceled metadata
-- **Thumbnail**: **first image** of the **`images`** field  
-  → If you want images in the cards, add an **Images** field named **`images`** to your product templates.  
-  → If the field is missing or empty, the card renders without an image.
+- **Thumbnail**: **first image** of any **`images`** field  
+  → If you want images in the cards, add an **Images** field to your product templates.  
+  → If an image field is missing or empty, the card renders without an image.
 
 ---
 
