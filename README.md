@@ -52,23 +52,17 @@ The module auto-creates `/account/`. You can link to it or place the button in y
 
 If you use `renderLoginLink()` in your template header/navigation (e.g., `_init.php` or layout file), make sure to call StripePaymentLinks' `render()` **BEFORE** rendering the header to ensure the login state is reflected correctly after Stripe checkout or magic link login:
 
-```php
-<?php namespace ProcessWire;
+```html  
+<body>
+<!-- 1) Handle SPL login FIRST (checkout/magic link) -->
+  <?= $modules->get('StripePaymentLinks')->render($page); ?>
 
-// 1) Handle SPL login FIRST (checkout/magic link)
-$splOutput = $modules->get('StripePaymentLinks')->render($page);
-
-// 2) NOW render header with login button (will show correct state)
-include('./_header.php'); // or wherever renderLoginLink() is called
-?>
-
+<header>
+<!-- 2) NOW render header with login button (will show correct state) -->
+  <?= $modules->get('StripePlCustomerPortal')->renderLoginLink() ?>
+</header>
 <main>
-  <?php
-  // 3) Output SPL modals/notices
-  echo $splOutput;
-
-  // Your content here
-  ?>
+  <?= $content ?>
 </main>
 ```
 
