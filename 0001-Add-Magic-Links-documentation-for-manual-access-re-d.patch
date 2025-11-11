@@ -1,0 +1,141 @@
+From e2b9f0f71c368baf6146702076c08b8dec4a3534 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 11 Nov 2025 20:29:08 +0000
+Subject: [PATCH] Add Magic Links documentation for manual access re-delivery
+
+---
+ README.md | 118 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 118 insertions(+)
+
+diff --git a/README.md b/README.md
+index 9dfe497..777c3f9 100644
+--- a/README.md
++++ b/README.md
+@@ -178,6 +178,124 @@ This makes it easy to audit or re-import purchases safely.
+ 
+ ---
+ 
++## Sending Magic Links (Manual Access Re-delivery)
++
++You can manually send magic links to customers who have already purchased products. This is useful when:
++- A customer lost their access email
++- You want to re-send access to a product
++- You need to grant temporary access for support purposes
++
++### API Method
++
++```php
++$spl = $modules->get('StripePaymentLinks');
++
++$result = $spl->sendMagicLinksForProduct(
++  $productIds,    // array of product page IDs
++  $emails,        // array of customer email addresses
++  $ttlMinutes,    // token validity in minutes (default: 60)
++  $actuallySend   // true = send emails, false = dry-run
++);
++```
++
++### Example: Send Magic Links
++
++```php
++$spl = $modules->get('StripePaymentLinks');
++
++// Product IDs (must have requires_access=1)
++$productIds = [1234, 1235];
++
++// Customer emails (only users who own these products will receive links)
++$emails = [
++  'customer1@example.com',
++  'customer2@example.com'
++];
++
++// Token validity in minutes
++$ttlMinutes = 60;
++
++// Send the magic links
++$result = $spl->sendMagicLinksForProduct($productIds, $emails, $ttlMinutes, true);
++
++// Check results
++echo "Sent: {$result['sent']}\n";
++echo "Skipped: {$result['skipped']}\n";
++if (!empty($result['errors'])) {
++  echo "Errors: " . implode(', ', $result['errors']) . "\n";
++}
++
++// View detailed log
++foreach ($result['log'] as $line) {
++  echo $line . "\n";
++}
++```
++
++### Dry-Run Mode (Test Without Sending Emails)
++
++```php
++// Set last parameter to false for dry-run
++$result = $spl->sendMagicLinksForProduct($productIds, $emails, $ttlMinutes, false);
++
++// View what would be sent
++foreach ($result['log'] as $line) {
++  echo $line . "\n";
++}
++```
++
++### How It Works
++
++- Each user receives **ONE email** with links to all products they own from the list
++- Only users who actually purchased the products receive emails
++- Non-existent users are skipped
++- Products without `requires_access=1` generate a warning but are still included
++- Magic links expire after the specified TTL (default: 60 minutes)
++- Links include an access token: `https://example.com/product/?access=TOKEN`
++
++### Return Value Structure
++
++```php
++[
++  'sent' => 2,              // Number of emails sent
++  'skipped' => 1,           // Number of recipients skipped
++  'errors' => [],           // Array of error messages
++  'log' => [                // Detailed log of operations
++    'Products: #1234 Product A, #1235 Product B',
++    'Recipients: customer1@example.com, customer2@example.com',
++    'TTL: 60 min',
++    'Mode: SEND',  // or 'DRY RUN (no mails)'
++    '',
++    'SENT  • customer1@example.com • 2 products',
++    'SKIP  • customer2@example.com • Owns none of the selected products'
++  ]
++]
++```
++
++### Use Cases
++
++**Support ticket:** A customer can't find their access email
++```php
++$result = $spl->sendMagicLinksForProduct([1234], ['customer@example.com'], 30, true);
++```
++
++**Bulk re-send:** Re-send access to all customers who own a specific product
++```php
++// Get all users who purchased product #1234
++$users = $pages->find("template=user, spl_purchases.product_ids*=1234");
++$emails = array_map(fn($u) => $u->email, $users->getArray());
++
++// Send magic links (dry-run first to check)
++$result = $spl->sendMagicLinksForProduct([1234], $emails, 120, false);
++// Review $result['log'], then set last param to true to actually send
++```
++
++**Temporary access:** Grant 15-minute demo access for support
++```php
++$result = $spl->sendMagicLinksForProduct([1234], ['demo@example.com'], 15, true);
++```
++
++---
++
+ ## Configuration
+ 
+ - **Stripe Secret API Key**
+-- 
+2.43.0
+
