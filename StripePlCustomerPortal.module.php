@@ -26,7 +26,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.6',
+      'version'  => '0.1.5',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'autoload' => true,
@@ -47,20 +47,20 @@ class StripePlCustomerPortal extends WireData implements Module {
    */
   public function init(): void {
      $this->ensureAccountTemplateAndPage();
-   
+
      $this->addHookBefore('Session::redirect', function(HookEvent $e) {
        if($this->user->isLoggedin()) return;
-   
+
        $sess = $this->wire()->session;
        $cfg  = $this->wire()->config;
        $input = $this->wire()->input;
-   
+
        if ($input->get('spl_logout')) { return; }
-       
+
        $req  = rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?? '/', '/') . '/';
        $to   = rtrim(parse_url((string)$e->arguments(0), PHP_URL_PATH) ?? '/', '/') . '/';
        $root = rtrim($cfg->urls->root, '/') . '/';
-   
+
        if($req === '/account/' && $to === $root) {
          $sess->set('pl_open_login', 1);
          $sess->set('pl_intended_url',
@@ -68,15 +68,15 @@ class StripePlCustomerPortal extends WireData implements Module {
          );
        }
      });
-   
+
      $this->addHookAfter('Page::render', function(HookEvent $e) {
        $sess = $this->wire()->session;
        if($this->user->isLoggedin() || !$sess->get('pl_open_login')) return;
        $sess->remove('pl_open_login');
-   
+
        $html = (string)$e->return;
        if(stripos($html, 'id="loginModal"') === false) return;
-   
+
        $e->return = preg_replace(
          '~</body>~i',
          '<script>document.addEventListener("DOMContentLoaded",()=>{let m=document.getElementById("loginModal");if(m&&window.bootstrap)bootstrap.Modal.getOrCreateInstance(m).show();});</script></body>',
@@ -84,7 +84,7 @@ class StripePlCustomerPortal extends WireData implements Module {
          1
        );
      });
-   
+
      $this->addHookBefore('Page::render', function(HookEvent $e) {
        $input = $this->wire('input');
        if(!$input->get('spl_logout')) return;
@@ -94,11 +94,11 @@ class StripePlCustomerPortal extends WireData implements Module {
        $s->remove('pl_intended_url');
        $this->wire('session')->redirect($this->wire('config')->urls->root);
      });
-   
+
      $this->addHook('/stripepaymentlinks/api', function(HookEvent $e) {
        $this->handleProfileUpdate($e);
      });
-   
+
      $this->addHookAfter('StripePaymentLinks::t', function(HookEvent $e) {
        $intended = (string)$this->wire('session')->get('pl_intended_url');
        if($intended === '' || strpos($intended, '/account/') === false) return;
@@ -151,7 +151,7 @@ class StripePlCustomerPortal extends WireData implements Module {
     }
     // Leave the physical file untouched (may have been modified).
   }
-    
+
   /**
    * Create a Stripe Billing Portal session for the current user and redirect.
    * - Lives entirely in StripePlCustomerPortal (no SPL changes).
@@ -163,28 +163,28 @@ class StripePlCustomerPortal extends WireData implements Module {
 
 /** Create a Stripe Billing Portal session (prefers ?customer=, else falls back). */
    protected function handleBillingPortalRedirect(): void {
-   
+
        $wire    = $this->wire();
        $user    = $wire->user;
        $input   = $wire->input;
        $session = $wire->session;
        $log     = $wire->log;
        $config  = $wire->config;
-   
+
        // must be logged in
        if(!$user || !$user->id) {
            $login = $this->loginUrl() ?: $config->urls->root;
            $session->redirect($login);
            return;
        }
-   
+
        // --- 1) Prefer explicit ?customer= if present and valid ---
        $cidParam = trim((string)$input->get->text('customer'));
        $customerId = null;
        if ($cidParam !== '' && preg_match('~^cus_[A-Za-z0-9]+$~', $cidParam)) {
            $customerId = $cidParam;
        }
-   
+
        // --- 2) Fallback: derive from the user's purchases (first match) ---
        if (!$customerId && $user->hasField('spl_purchases')) {
            foreach ($user->spl_purchases as $purchase) {
@@ -202,30 +202,30 @@ class StripePlCustomerPortal extends WireData implements Module {
                }
            }
        }
-   
+
        if(!$customerId) {
            $log->error("Portal billing_portal: NO CUSTOMER ID (user={$user->id})");
            $this->emitApiError(403, 'No Stripe customer ID found.');
        }
-   
+
        // resolve secret
        $secret = $this->detectStripeSecretFromSpl();
        if($secret === '') {
            $this->emitApiError(500, 'Stripe secret not configured.');
        }
-   
+
        // load Stripe SDK if present
        $sdk = $this->wire('config')->paths->siteModules . 'StripePaymentLinks/vendor/stripe-php/init.php';
        if (is_file($sdk)) {
            require_once $sdk;
        }
-   
+
        // --- sanitize/normalize return_url to absolute and same host ---
        $raw     = trim((string)$input->get->text('return'));
        $host    = (string)$config->httpHost;
        $scheme  = $config->https ? 'https://' : 'http://';
        $default = $scheme . $host . $config->urls->root . 'account/';
-   
+
        if ($raw === '' || !preg_match('~^https?://~i', $raw)) {
            if ($raw !== '' && str_starts_with($raw, '/')) {
                $returnUrl = $scheme . $host . $raw;
@@ -244,7 +244,7 @@ class StripePlCustomerPortal extends WireData implements Module {
        } catch (\Throwable $e) {
            $returnUrl = $default;
        }
-   
+
        // --- create portal session ---
        try {
            $stripe = new \Stripe\StripeClient($secret);
@@ -252,26 +252,26 @@ class StripePlCustomerPortal extends WireData implements Module {
                'customer'   => $customerId,
                'return_url' => $returnUrl,
            ]);
-   
+
            if (empty($bp->url)) {
                $log->error("Portal billing_portal: empty session URL (user={$user->id})");
                $this->emitApiError(502, 'Unable to open Stripe customer portal.');
            }
-   
+
            $session->redirect((string)$bp->url);
            return;
-   
+
        } catch (\Throwable $e) {
            $this->emitApiError(500, $e->getMessage());
        }
    }
-   
+
    /* Try to read the Stripe secret key from SPL module config.
    * Falls back to empty string if not found.
    */
   protected function detectStripeSecretFromSpl(): string {
       $modules = $this->wire('modules');
-  
+
       // 1) Try SPL config directly
       $splCfg = is_object($modules) ? (array)$modules->getConfig('StripePaymentLinks') : [];
       foreach($splCfg as $v) {
@@ -280,7 +280,7 @@ class StripePlCustomerPortal extends WireData implements Module {
               return $v;
           }
       }
-  
+
       // 2) Try instance property (if SPL exposes it via public get)
       $spl = $modules ? $modules->get('StripePaymentLinks') : null;
       if($spl) {
@@ -290,10 +290,10 @@ class StripePlCustomerPortal extends WireData implements Module {
               if($k !== '') return $k;
           }
       }
-  
+
       return '';
   }
-  
+
   /**
    * Attempt to include Stripe SDK from SPL's vendor path (if not globally loaded).
    */
@@ -310,7 +310,7 @@ class StripePlCustomerPortal extends WireData implements Module {
           }
       }
   }
-  
+
   /**
    * Small helper to emit a minimal JSON error (used by the handler on failure).
    * Keeps output consistent with front-end expectations.
@@ -322,7 +322,7 @@ class StripePlCustomerPortal extends WireData implements Module {
       if(function_exists('fastcgi_finish_request')) fastcgi_finish_request();
       exit;
   }
-  
+
   /**
    * Resolve a login URL (used if someone hits the handler while logged out).
    * Replace with your own if you already have a method for this.
@@ -369,7 +369,7 @@ class StripePlCustomerPortal extends WireData implements Module {
       'label.password'         => $this->_('Password'),
       'label.password_confirm' => $this->_('Confirm password'),
 
-      // Login-required text (used to override SPL’s t())
+      // Login-required text (used to override SPL's t())
       'modal.login.title' => $this->_('Customer Login'),
       'modal.login.body'  => $this->_('Please sign in to view your purchases.'),
 
@@ -444,7 +444,7 @@ class StripePlCustomerPortal extends WireData implements Module {
      $pages       = $this->wire('pages');
      $config      = $this->wire('config');
      $roles       = $this->wire('roles');
-   
+
      // --- 1) Fieldgroup: get or create
      /** @var \ProcessWire\Fieldgroup|null $fg */
      $fg = $fieldgroups->get('fg_spl_account');
@@ -453,7 +453,7 @@ class StripePlCustomerPortal extends WireData implements Module {
        $fg->name = 'fg_spl_account';
        $fieldgroups->save($fg);
      }
-   
+
      // --- 2) Template: get or create
      /** @var \ProcessWire\Template|null $tpl */
      $tpl = $templates->get('spl_account');
@@ -464,14 +464,14 @@ class StripePlCustomerPortal extends WireData implements Module {
        $tpl->noChildren = 1;
        $tpl->useRoles   = 1;
        $templates->save($tpl);
-   
+
        // Default access setup (only applied on creation)
        $guest    = $roles->get('guest');
        $customer = $roles->get('customer');
-   
+
        if ($guest && method_exists($tpl, 'removeRole')) $tpl->removeRole($guest, 'view');
        if ($customer && method_exists($tpl, 'addRole'))  $tpl->addRole($customer, 'view');
-   
+
        $tpl->set('noAccess', 2);        // redirect/render
        $tpl->set('redirectLogin', '/'); // redirect target
        $templates->save($tpl);
@@ -482,7 +482,7 @@ class StripePlCustomerPortal extends WireData implements Module {
          $templates->save($tpl);
        }
      }
-   
+
      // --- 3) Template file /site/templates/spl_account.php
      $tplFile = rtrim($config->paths->templates, '/\\') . DIRECTORY_SEPARATOR . 'spl_account.php';
      if ($writeFile || !is_file($tplFile)) {
@@ -490,7 +490,7 @@ class StripePlCustomerPortal extends WireData implements Module {
    <?php namespace ProcessWire;
    /** @var \ProcessWire\Modules $modules */
    $portal = $modules->get('StripePlCustomerPortal');
-   
+
    $content = '
    <div class="container py-5 mt-5">
      <div class="row">
@@ -502,7 +502,7 @@ class StripePlCustomerPortal extends WireData implements Module {
        </div>
      </div>
    </div>';
-   
+
    $content .= $portal->renderAccount('grid-all');
    PHP;
        if (is_dir($config->paths->templates)) {
@@ -510,7 +510,7 @@ class StripePlCustomerPortal extends WireData implements Module {
          @chmod($tplFile, 0660);
        }
      }
-   
+
      // --- 4) Page /account: create if missing
      $account = $pages->get('/account/');
      if (!$account || !$account->id) {
@@ -528,7 +528,7 @@ class StripePlCustomerPortal extends WireData implements Module {
        }
      }
    }
-      
+
   /**
    * Get names of product templates from SPL configuration.
    *
@@ -552,29 +552,29 @@ class StripePlCustomerPortal extends WireData implements Module {
    * @return string HTML <span>…</span>
    */
   private function buildStatusLabel(array $r): string {
-  
+
       $key  = $r['status_key'] ?? '';
       $date = $r['status_until'] ?? null;
-  
+
       switch ($key) {
-  
+
           case 'active_until':
               return sprintf(
                   '<span class="badge text-bg-success rounded-pill shadow-sm">%s</span>',
                   $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', (int)$date)])
               );
-  
+
           case 'expired_on':
               return sprintf(
                   '<span class="badge text-bg-secondary rounded-pill">%s</span>',
                   $this->tLocalFmt('status.expired_on', ['{date}' => date('Y-m-d', (int)$date)])
               );
-  
+
           case 'paused':
               return '<span class="badge text-bg-warning rounded-pill">'
                    . $this->tLocal('status.paused')
                    . '</span>';
-  
+
           case 'canceled':
               return $date
                   ? sprintf(
@@ -584,16 +584,16 @@ class StripePlCustomerPortal extends WireData implements Module {
                   : '<span class="badge text-bg-danger rounded-pill">'
                     . $this->tLocal('status.canceled')
                     . '</span>';
-  
+
           case 'active':
               return '<span class="badge text-bg-success rounded-pill">'
                    . $this->tLocal('status.active')
                    . '</span>';
-  
+
           default:
               return '';
       }
-  } 
+  }
 /** Returns normalized purchases: one row per (purchase × product). */
 public function getPurchasesData(User $user): array {
   $pages = $this->wire('pages');
@@ -651,35 +651,9 @@ public function getPurchasesData(User $user): array {
       }
 
       // Derive status/access
-      // First try: lookup by ProcessWire product ID
-      $lookupKey = (string)$pid;
-      $endRaw   = $map[$lookupKey] ?? null;
-      $paused   = array_key_exists($lookupKey . '_paused', $map);
-      $canceled = array_key_exists($lookupKey . '_canceled', $map);
-
-      // BUGFIX: For unmapped purchases (no product page), try Stripe product ID as fallback
-      if ($endRaw === null && (!$p || !$p->id)) {
-        $stripeSession = (array) $item->meta('stripe_session');
-        $stripeProductId = $this->extractStripeProductId($stripeSession);
-
-        // DEBUG: Log what we're looking for
-        if ($this->wire('config')->debug) {
-          $this->wire('log')->save('spl-debug', sprintf(
-            "Unmapped purchase debugging:\n  PW Product ID: %s\n  Stripe Product ID: %s\n  period_end_map keys: %s\n  Map content: %s",
-            $pid,
-            $stripeProductId ?: 'NULL',
-            implode(', ', array_keys($map)),
-            json_encode($map, JSON_PRETTY_PRINT)
-          ));
-        }
-
-        if ($stripeProductId) {
-          $lookupKey = $stripeProductId;
-          $endRaw   = $map[$lookupKey] ?? null;
-          $paused   = array_key_exists($lookupKey . '_paused', $map);
-          $canceled = array_key_exists($lookupKey . '_canceled', $map);
-        }
-      }
+      $endRaw   = $map[(string)$pid] ?? null;
+      $paused   = array_key_exists($pid . '_paused', $map);
+      $canceled = array_key_exists($pid . '_canceled', $map);
 
       $statusKey   = '';
       $statusUntil = null;
@@ -719,36 +693,6 @@ public function getPurchasesData(User $user): array {
 
   usort($rows, fn($a,$b)=> $b['purchase_ts'] <=> $a['purchase_ts']);
   return $rows;
-}
-
-/**
- * Extract Stripe product ID from Stripe session metadata.
- * Used to lookup period_end for unmapped purchases.
- *
- * @param array $stripeSession The stripe_session metadata array
- * @return string|null Stripe product ID (e.g. "prod_XXX") or null
- */
-private function extractStripeProductId(array $stripeSession): ?string {
-  if (isset($stripeSession['line_items']['data']) && is_array($stripeSession['line_items']['data'])) {
-    foreach ($stripeSession['line_items']['data'] as $lineItem) {
-      if (!is_array($lineItem)) continue;
-
-      // Get Stripe product ID from price->product
-      if (isset($lineItem['price']['product'])) {
-        $product = $lineItem['price']['product'];
-
-        // Could be just the ID string or an object/array with id property
-        if (is_string($product) && $product !== '') {
-          return $product;
-        } elseif (is_array($product) && isset($product['id']) && is_string($product['id'])) {
-          return $product['id'];
-        } elseif (is_object($product) && isset($product->id) && is_string($product->id)) {
-          return $product->id;
-        }
-      }
-    }
-  }
-  return null;
 }
 
 /**
@@ -803,13 +747,13 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       // Return a slim wrapper — content will come after login
       return $this->wrapContainer('<div class="my-5"></div>');
     }
-    
+
     // Early action handling (before rendering any markup)
     if ($this->wire('input')->get->text('action') === 'billing_portal') {
       $this->handleBillingPortalRedirect();
       return ''; // ensure string return type after redirect attempt
     }
-    
+
     // explicit view parameter OR ?view=table override
     $viewParam = $this->wire('input')->get->text('view');
     if ($viewParam) $view = $viewParam;
@@ -845,7 +789,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
      $label  = $opts['label'] ?? $this->tLocal('button.edit');
      $class  = trim('btn btn-primary d-flex align-items-center ' . ($opts['class'] ?? ''));
      $idAttr = isset($opts['id']) ? ' id="' . htmlspecialchars((string)$opts['id'], ENT_QUOTES) . '"' : '';
-   
+
      return
        '<button type="button"' . $idAttr . ' class="' . htmlspecialchars($class, ENT_QUOTES) . '"'
        . ' data-bs-toggle="modal" data-bs-target="#profileModal">'
@@ -894,13 +838,13 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     return '<div class="container mb-5"><div class="row"><div class="col-lg-10 mx-auto">' . $inner . '</div></div></div>';
   }
 
-  /** 
-  * Return a product thumb URL from the first available image field (any name). 
+  /**
+  * Return a product thumb URL from the first available image field (any name).
   */
   private function productThumbUrl(\ProcessWire\Page $p, int $w = 800, int $h = 600): string {
     // 1) If you ever want to prefer specific field names, you can drop them here:
     $preferred = []; // e.g. ['hero', 'cover', 'images'] — leave empty to just scan all fields
-  
+
     foreach ($preferred as $fname) {
       if ($p->hasField($fname)) {
         $imgs = $p->get($fname);
@@ -909,7 +853,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
         }
       }
     }
-  
+
     // 2) Fallback: scan every field on the page and pick the first image field with images
     foreach ($p->fields as $field) {
       if ($field->type instanceof \ProcessWire\FieldtypeImage) {
@@ -928,73 +872,6 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    * @param array $opts
    * @return string
    */
-   /*
-  public function renderPurchasesGrid(User $user, array $opts = []): string {
-    $rows = $this->getPurchasesData($user);
-    if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-  
-    // Keep: one-time purchases ("active") and subscriptions with active access ("active_until" + is_active=true).
-    // Drop: paused, canceled, expired, anything else.
-    $seen   = [];
-    $usable = [];
-    foreach ($rows as $r) {
-      $keep =
-        ($r['status_key'] === 'active') ||
-        ($r['status_key'] === 'active_until' && $r['is_active'] === true);
-  
-      if (!$keep) continue;
-  
-      $pid = (int) $r['product_id'];
-      if (isset($seen[$pid])) continue; // de-dupe per product
-      $seen[$pid] = true;
-  
-      $usable[] = $r;
-    }
-    if (!$usable) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-  
-    // CSS once
-    $css = '<style id="spl-card-overlay-css">
-  .spl-card{position:relative;overflow:hidden;border:0}
-  .spl-card .card-img-top{display:block;width:100%;height:auto}
-  .spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
-    background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
-  .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
-    text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
-  </style>';
-  
-    // Badge only for active_until (date). One-time "active" has no badge.
-    $badge = function(array $r): string {
-      if ($r['status_key'] === 'active_until' && !empty($r['status_until'])) {
-        return '<span class="badge text-bg-success rounded-pill shadow-sm">'
-             . $this->tLocalFmt('status.active_until', ['{date}' => date('Y-m-d', (int)$r['status_until'])])
-             . '</span>';
-      }
-      return '';
-    };
-  
-    $out = $css;
-    foreach ($usable as $r) {
-      $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
-      $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
-      $anchor = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
-  
-      $out .= '
-        <div class="col-12 col-sm-6 col-lg-4">
-          <div class="card spl-card shadow-sm">
-            <div class="position-relative">
-              ' . $imgTag . '
-              <div class="spl-grad"></div>
-              <div class="spl-title"><h3 class="m-0">' . $title . '</h3></div>
-              <div class="position-absolute top-0 end-0 m-2">' . $badge($r) . '</div>
-            </div>
-            ' . $anchor . '
-          </div>
-        </div>';
-    }
-    return $out;
-  }
-  */
-  // CHANGED: use buildStatusLabel() for the badge text.
   public function renderPurchasesGrid(User $user, array $opts = []): string {
     $rows = $this->getPurchasesData($user);
     if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
@@ -1005,8 +882,8 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
               ($r['status_key'] === 'active_until' && $r['is_active'] === true);
       if (!$keep) continue;
 
-      // FIXED: Show unmapped purchases (they have status but no product page)
-      // Keep unmapped purchases - they will be displayed without link but with status badge
+      // Skip purchases without page mapping (no URL = no valid product page)
+      if (empty($r['product_url'])) continue;
 
       $pid = (int)$r['product_id'];
       if (isset($seen[$pid])) continue;
@@ -1014,7 +891,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       $usable[] = $r;
     }
     if (!$usable) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-  
+
     $css = '<style id="spl-card-overlay-css">
   .spl-card{position:relative;overflow:hidden;border:0}
   .spl-card .card-img-top{display:block;width:100%;height:auto}
@@ -1023,18 +900,22 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
   .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
     text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
   </style>';
-  
-    // FIXED: Use buildStatusLabel() directly - it already returns complete HTML with badge
+
     $badge = function(array $r): string {
-      return $this->buildStatusLabel($r);
+      if (($r['status_key'] ?? '') === 'active_until' && !empty($r['status_until'])) {
+        return '<span class="badge text-bg-success rounded-pill shadow-sm">'
+             . $this->buildStatusLabel($r)
+             . '</span>';
+      }
+      return '';
     };
-  
+
     $out = $css;
     foreach ($usable as $r) {
       $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
       $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
       $anchor = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
-  
+
       $out .= '
         <div class="col-12 col-sm-6 col-lg-4">
           <div class="card spl-card shadow-sm">
@@ -1059,17 +940,18 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
   public function renderPurchasesGridAll(User $user): string {
     // 1) active/purchased cards
     $ownedHtml = $this->renderPurchasesGrid($user);
-  
-    // 2) collect active-owned product IDs (including unmapped purchases)
+
+    // 2) collect active-owned product IDs (only those with valid page mapping)
     $rows = $this->getPurchasesData($user);
     $ownedActiveIds = [];
     foreach ($rows as $r) {
-      if ($r['status_key'] === 'active' ||
-          ($r['status_key'] === 'active_until' && $r['is_active'] === true)) {
+      if (($r['status_key'] === 'active' ||
+           ($r['status_key'] === 'active_until' && $r['is_active'] === true))
+          && !empty($r['product_url'])) {
         $ownedActiveIds[(int) $r['product_id']] = true;
       }
     }
-  
+
     // 3) find all gated products that are NOT actively owned
     $all = $this->findAccessProducts();
     $unowned = [];
@@ -1077,21 +959,21 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       if (!isset($ownedActiveIds[(int) $p->id])) $unowned[] = $p;
     }
     if (!$unowned) return $ownedHtml;
-  
+
     // 4) CSS only for gray overlay
     $css = '<style id="spl-gray-cards">
   .spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
   .spl-card.spl-gray:hover .card-img-top{filter:none;opacity:1}
   </style>';
-  
+
     $out = $ownedHtml . $css;
-  
+
     // 5) render unowned cards in gray
     foreach ($unowned as $p) {
       $title = htmlspecialchars((string) $p->title, ENT_QUOTES);
       $thumb = $this->productThumbUrl($p);
       $img   = $thumb ? '<img class="card-img-top" src="' . htmlspecialchars($thumb, ENT_QUOTES) . '" alt="">' : '';
-  
+
       $out .= '
         <div class="col-12 col-sm-6 col-lg-4">
           <div class="card spl-card spl-gray shadow-sm">
@@ -1104,120 +986,119 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
           </div>
         </div>';
     }
-  
+
     return $out;
-  }  
+  }
 
-    /**
-     * Render purchases as a compact table. Each row builds a portal link whose
-     * `customer` param is taken from the *exact purchase item* that contains
-     * this product (reads meta['stripe_session']['customer'] of that item).
-     */
-     
-     /** Render purchases as a compact table (now using buildStatusLabel()). */
+/**
+ * Render purchases as a compact table (now using buildStatusLabel()).
+ *
+ * DEBUG MODE: Add ?debug=1 to see period_end_map structure
+ */
 private function renderPurchasesTable(User $user): string {
-       // DEBUG MODE: Add ?debug=1 to URL to see period_end_map analysis
-       $debugMode = $this->wire('input')->get->int('debug') === 1;
-       $debugOutput = '';
+  $debugMode = $this->wire('input')->get->int('debug') === 1;
+  $debugOutput = '';
 
-       $rows = $this->getPurchasesData($user);
-       if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+  $rows = $this->getPurchasesData($user);
+  if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
 
-       // DEBUG: Show raw data for unmapped purchases
-       if ($debugMode) {
-         $debugOutput .= '<div class="alert alert-info mb-4"><h4>DEBUG MODE</h4>';
-         foreach ($user->spl_purchases as $item) {
-           $map = (array) $item->meta('period_end_map');
-           $pids = (array) $item->meta('product_ids');
-           $session = (array) $item->meta('stripe_session');
+  // DEBUG: Show raw data
+  if ($debugMode) {
+    $debugOutput .= '<div class="alert alert-warning mb-4"><h4>🔍 DEBUG MODE</h4>';
 
-           $debugOutput .= '<hr><strong>Purchase ' . $item->id . '</strong><br>';
-           $debugOutput .= '<strong>Product IDs:</strong> ' . json_encode($pids) . '<br>';
-           $debugOutput .= '<strong>Period End Map Keys:</strong> ' . implode(', ', array_keys($map)) . '<br>';
-           $debugOutput .= '<strong>Period End Map:</strong><pre>' . json_encode($map, JSON_PRETTY_PRINT) . '</pre>';
+    foreach ($user->spl_purchases as $item) {
+      $map = (array) $item->meta('period_end_map');
+      $pids = (array) $item->meta('product_ids');
+      $session = (array) $item->meta('stripe_session');
 
-           // Extract Stripe Product ID
-           if (isset($session['line_items']['data'][0]['price']['product'])) {
-             $prod = $session['line_items']['data'][0]['price']['product'];
-             $stripeId = is_string($prod) ? $prod : ($prod['id'] ?? 'N/A');
-             $debugOutput .= '<strong>Stripe Product ID from line_items:</strong> ' . htmlspecialchars($stripeId) . '<br>';
-           }
-         }
-         $debugOutput .= '</div>';
-       }
-     
-       $resolveCustomerId = function(User $u, int $productId): ?string {
-         if (!$u->hasField('spl_purchases') || !$u->spl_purchases->count()) return null;
-     
-         $items = iterator_to_array($u->spl_purchases);
-         usort($items, fn($a,$b)=>((int)$b->created)<=>((int)$a->created));
-     
-         foreach ($items as $it) {
-           $meta = (array)$it->meta('stripe_session');
-           if (!$meta) continue;
-     
-           $pids = array_map('intval', (array)$it->meta('product_ids'));
-           if (!in_array($productId, $pids, true)) continue;
-     
-           $raw = $meta['customer'] ?? null;
-           if (is_string($raw) && $raw !== '') return $raw;
-           if (is_array($raw) && isset($raw['id'])) return (string)$raw['id'];
-           if (is_object($raw) && isset($raw->id)) return (string)$raw->id;
-         }
-         return null;
-       };
-     
-       $accountUrl = $this->wire('pages')->get('template=spl_account')->url
-                   ?: $this->wire('config')->urls->root . 'account/';
-       $returnUrl  = $this->wire('page')->httpUrl;
-     
-       $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+      $debugOutput .= '<hr><strong>Purchase Item #' . $item->id . '</strong><br>';
+      $debugOutput .= '<strong>product_ids:</strong> ' . htmlspecialchars(json_encode($pids)) . '<br>';
+      $debugOutput .= '<strong>period_end_map KEYS:</strong> <code>' . implode(', ', array_keys($map)) . '</code><br>';
+      $debugOutput .= '<strong>period_end_map DATA:</strong><pre style="font-size:11px;">' . htmlspecialchars(json_encode($map, JSON_PRETTY_PRINT)) . '</pre>';
 
-       $out  = $debugOutput; // Add debug info at the top
-       $out .= '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
-       $out .= '<div class="table-responsive"><table class="table table-sm align-middle">';
-       $out .= '<thead><tr>'
-             . '<th style="width:180px;">' . $this->tLocal('ui.table.head.date') . '</th>'
-             . '<th>'                      . $this->tLocal('ui.table.head.product') . '</th>'
-             . '<th style="width:200px;">' . $this->tLocal('ui.table.head.status') . '</th>'
-             . '<th style="width:100px;"></th>'
-             . '</tr></thead><tbody>';
-     
-       foreach ($rows as $r) {
-     
-         $cid = $resolveCustomerId($user, (int)$r['product_id']);
-     
-         $invoiceLink = '';
-         if ($cid) {
-           $bp = $accountUrl
-               . '?action=billing_portal'
-               . '&customer=' . rawurlencode($cid)
-               . '&return='   . rawurlencode($returnUrl);
-     
-           $invoiceLink = '<a class="btn btn-sm btn-light" target="_blank" '
-                        . 'href="' . $h($bp) . '">'
-                        . $h($this->tLocal('link.invoice'))
-                        . '</a>';
-         }
-     
-         $prodHtml = $r['product_url']
-           ? '<a href="' . $h($r['product_url']) . '">' . $h($r['product_title']) . '</a>'
-           : $h($r['product_title']);
-     
-         // ✔︎ Einheitliche Status-Erzeugung über i18n
-         $status = $this->buildStatusLabel($r);
-     
-         $out .= '<tr>'
-               . '<td style="white-space:nowrap;">' . $h($r['purchase_date']) . '</td>'
-               . '<td>' . $prodHtml . '</td>'
-               . '<td>' . $status . '</td>'
-               . '<td style="text-align:right">' . $invoiceLink . '</td>'
-               . '</tr>';
-       }
-     
-       $out .= '</tbody></table></div>';
-       return $out;
-     }
+      // Show line_items structure
+      if (isset($session['line_items']['data'][0])) {
+        $li = $session['line_items']['data'][0];
+        $debugOutput .= '<strong>First line_item:</strong><br>';
+        $debugOutput .= '  - description: ' . htmlspecialchars($li['description'] ?? 'N/A') . '<br>';
+        $debugOutput .= '  - price.product: ' . htmlspecialchars(json_encode($li['price']['product'] ?? 'N/A')) . '<br>';
+      }
+    }
+    $debugOutput .= '</div>';
+  }
+
+  $resolveCustomerId = function(User $u, int $productId): ?string {
+    if (!$u->hasField('spl_purchases') || !$u->spl_purchases->count()) return null;
+
+    $items = iterator_to_array($u->spl_purchases);
+    usort($items, fn($a,$b)=>((int)$b->created)<=>((int)$a->created));
+
+    foreach ($items as $it) {
+      $meta = (array)$it->meta('stripe_session');
+      if (!$meta) continue;
+
+      $pids = array_map('intval', (array)$it->meta('product_ids'));
+      if (!in_array($productId, $pids, true)) continue;
+
+      $raw = $meta['customer'] ?? null;
+      if (is_string($raw) && $raw !== '') return $raw;
+      if (is_array($raw) && isset($raw['id'])) return (string)$raw['id'];
+      if (is_object($raw) && isset($raw->id)) return (string)$raw->id;
+    }
+    return null;
+  };
+
+  $accountUrl = $this->wire('pages')->get('template=spl_account')->url
+              ?: $this->wire('config')->urls->root . 'account/';
+  $returnUrl  = $this->wire('page')->httpUrl;
+
+  $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+
+  $out  = $debugOutput;
+  $out .= '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
+  $out .= '<div class="table-responsive"><table class="table table-sm align-middle">';
+  $out .= '<thead><tr>'
+        . '<th style="width:180px;">' . $this->tLocal('ui.table.head.date') . '</th>'
+        . '<th>'                      . $this->tLocal('ui.table.head.product') . '</th>'
+        . '<th style="width:200px;">' . $this->tLocal('ui.table.head.status') . '</th>'
+        . '<th style="width:100px;"></th>'
+        . '</tr></thead><tbody>';
+
+  foreach ($rows as $r) {
+
+    $cid = $resolveCustomerId($user, (int)$r['product_id']);
+
+    $invoiceLink = '';
+    if ($cid) {
+      $bp = $accountUrl
+          . '?action=billing_portal'
+          . '&customer=' . rawurlencode($cid)
+          . '&return='   . rawurlencode($returnUrl);
+
+      $invoiceLink = '<a class="btn btn-sm btn-light" target="_blank" '
+                   . 'href="' . $h($bp) . '">'
+                   . $h($this->tLocal('link.invoice'))
+                   . '</a>';
+    }
+
+    $prodHtml = $r['product_url']
+      ? '<a href="' . $h($r['product_url']) . '">' . $h($r['product_title']) . '</a>'
+      : $h($r['product_title']);
+
+    $status = $this->buildStatusLabel($r);
+
+    $out .= '<tr>'
+          . '<td style="white-space:nowrap;">' . $h($r['purchase_date']) . '</td>'
+          . '<td>' . $prodHtml . '</td>'
+          . '<td>' . $status . '</td>'
+          . '<td style="text-align:right">' . $invoiceLink . '</td>'
+          . '</tr>';
+  }
+
+  $out .= '</tbody></table></div>';
+  return $out;
+}
+
   /**
    * Resolve absolute paths to SPL UI bits (ModalRenderer + modal view).
    *
