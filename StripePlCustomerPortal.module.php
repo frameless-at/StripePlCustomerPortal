@@ -619,7 +619,35 @@ public function getPurchasesData(User $user): array {
     foreach ((array) $item->meta('product_ids') as $pidRaw) {
       $pid = (int) $pidRaw;
       $p   = $byId[$pid] ?? null;
-      if (!$p || !$p->id) continue;
+
+      // BUGFIX: Don't skip purchases without page mapping
+      // Use fallback data if product page doesn't exist
+      $productTitle = '';
+      $productUrl   = '';
+      $category     = '';
+      $thumbUrl     = '';
+
+      if ($p && $p->id) {
+        // Product page exists - use page data
+        $productTitle = (string) $p->title;
+        $productUrl   = (bool) $p->get('requires_access') ? $p->httpUrl : '';
+        $category     = (string)($p->get('product_category') ?: $p->template->label ?: $p->template->name);
+
+        // First available image field (any name)
+        foreach ($p->fields as $f) {
+          if ($f->type instanceof \ProcessWire\FieldtypeImage) {
+            $imgs = $p->get($f->name);
+            if ($imgs && $imgs->count()) {
+              $thumbUrl = $imgs->first()->size(800, 600)->url;
+            }
+            break;
+          }
+        }
+      } else {
+        // Product page doesn't exist - use fallback
+        $productTitle = "Product #$pid";
+        $category     = 'Unknown';
+      }
 
       // Derive status/access
       $endRaw   = $map[(string)$pid] ?? null;
@@ -647,27 +675,12 @@ public function getPurchasesData(User $user): array {
         $isActive  = true;
       }
 
-      // Category/label for tabs
-      $category = (string)($p->get('product_category') ?: $p->template->label ?: $p->template->name);
-
-      // First available image field (any name)
-      $thumbUrl = '';
-      foreach ($p->fields as $f) {
-        if ($f->type instanceof \ProcessWire\FieldtypeImage) {
-          $imgs = $p->get($f->name);
-          if ($imgs && $imgs->count()) {
-            $thumbUrl = $imgs->first()->size(800, 600)->url;
-          }
-          break;
-        }
-      }
-
       $rows[] = [
         'purchase_ts'   => $ts,
         'purchase_date' => $date,
-        'product_id'    => (int) $p->id,
-        'product_title' => (string) $p->title,
-        'product_url'   => (bool) $p->get('requires_access') ? $p->httpUrl : '',
+        'product_id'    => $pid,
+        'product_title' => $productTitle,
+        'product_url'   => $productUrl,
         'thumb_url'     => $thumbUrl,
         'category'      => $category,
         'status_key'    => $statusKey,    // 'active'|'active_until'|'expired_on'|'paused'|'canceled'
