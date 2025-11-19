@@ -26,7 +26,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.5',
+      'version'  => '0.1.6',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'autoload' => true,
@@ -651,9 +651,23 @@ public function getPurchasesData(User $user): array {
       }
 
       // Derive status/access
-      $endRaw   = $map[(string)$pid] ?? null;
-      $paused   = array_key_exists($pid . '_paused', $map);
-      $canceled = array_key_exists($pid . '_canceled', $map);
+      // First try: lookup by ProcessWire product ID
+      $lookupKey = (string)$pid;
+      $endRaw   = $map[$lookupKey] ?? null;
+      $paused   = array_key_exists($lookupKey . '_paused', $map);
+      $canceled = array_key_exists($lookupKey . '_canceled', $map);
+
+      // BUGFIX: For unmapped purchases (no product page), try Stripe product ID as fallback
+      if ($endRaw === null && (!$p || !$p->id)) {
+        $stripeSession = (array) $item->meta('stripe_session');
+        $stripeProductId = $this->extractStripeProductId($stripeSession);
+        if ($stripeProductId) {
+          $lookupKey = $stripeProductId;
+          $endRaw   = $map[$lookupKey] ?? null;
+          $paused   = array_key_exists($lookupKey . '_paused', $map);
+          $canceled = array_key_exists($lookupKey . '_canceled', $map);
+        }
+      }
 
       $statusKey   = '';
       $statusUntil = null;
@@ -693,6 +707,36 @@ public function getPurchasesData(User $user): array {
 
   usort($rows, fn($a,$b)=> $b['purchase_ts'] <=> $a['purchase_ts']);
   return $rows;
+}
+
+/**
+ * Extract Stripe product ID from Stripe session metadata.
+ * Used to lookup period_end for unmapped purchases.
+ *
+ * @param array $stripeSession The stripe_session metadata array
+ * @return string|null Stripe product ID (e.g. "prod_XXX") or null
+ */
+private function extractStripeProductId(array $stripeSession): ?string {
+  if (isset($stripeSession['line_items']['data']) && is_array($stripeSession['line_items']['data'])) {
+    foreach ($stripeSession['line_items']['data'] as $lineItem) {
+      if (!is_array($lineItem)) continue;
+
+      // Get Stripe product ID from price->product
+      if (isset($lineItem['price']['product'])) {
+        $product = $lineItem['price']['product'];
+
+        // Could be just the ID string or an object/array with id property
+        if (is_string($product) && $product !== '') {
+          return $product;
+        } elseif (is_array($product) && isset($product['id']) && is_string($product['id'])) {
+          return $product['id'];
+        } elseif (is_object($product) && isset($product->id) && is_string($product->id)) {
+          return $product->id;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -949,8 +993,8 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
               ($r['status_key'] === 'active_until' && $r['is_active'] === true);
       if (!$keep) continue;
 
-      // Skip purchases without page mapping (no URL = no valid product page)
-      if (empty($r['product_url'])) continue;
+      // FIXED: Show unmapped purchases (they have status but no product page)
+      // Keep unmapped purchases - they will be displayed without link but with status badge
 
       $pid = (int)$r['product_id'];
       if (isset($seen[$pid])) continue;
@@ -968,13 +1012,9 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
   </style>';
   
+    // FIXED: Use buildStatusLabel() directly - it already returns complete HTML with badge
     $badge = function(array $r): string {
-      if (($r['status_key'] ?? '') === 'active_until' && !empty($r['status_until'])) {
-        return '<span class="badge text-bg-success rounded-pill shadow-sm">'
-             . $this->buildStatusLabel($r)
-             . '</span>';
-      }
-      return '';
+      return $this->buildStatusLabel($r);
     };
   
     $out = $css;
@@ -1008,13 +1048,12 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     // 1) active/purchased cards
     $ownedHtml = $this->renderPurchasesGrid($user);
   
-    // 2) collect active-owned product IDs (only those with valid page mapping)
+    // 2) collect active-owned product IDs (including unmapped purchases)
     $rows = $this->getPurchasesData($user);
     $ownedActiveIds = [];
     foreach ($rows as $r) {
-      if (($r['status_key'] === 'active' ||
-           ($r['status_key'] === 'active_until' && $r['is_active'] === true))
-          && !empty($r['product_url'])) {
+      if ($r['status_key'] === 'active' ||
+          ($r['status_key'] === 'active_until' && $r['is_active'] === true)) {
         $ownedActiveIds[(int) $r['product_id']] = true;
       }
     }
