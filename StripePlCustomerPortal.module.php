@@ -644,9 +644,10 @@ public function getPurchasesData(User $user): array {
           }
         }
       } else {
-        // Product page doesn't exist - use fallback
-        $productTitle = "Product #$pid";
-        $category     = 'Unknown';
+        // Product page doesn't exist - extract from Stripe metadata
+        $stripeSession = (array) $item->meta('stripe_session');
+        $productTitle = $this->extractProductNameFromStripeSession($stripeSession, $pid);
+        $category     = 'Stripe Product';
       }
 
       // Derive status/access
@@ -692,6 +693,36 @@ public function getPurchasesData(User $user): array {
 
   usort($rows, fn($a,$b)=> $b['purchase_ts'] <=> $a['purchase_ts']);
   return $rows;
+}
+
+/**
+ * Extract product name from Stripe session metadata.
+ * Tries multiple fields in order: line_items description, product name, fallback to ID.
+ *
+ * @param array $stripeSession The stripe_session metadata array
+ * @param int $productId The product ID for fallback
+ * @return string Product name or "Product #[id]" as fallback
+ */
+private function extractProductNameFromStripeSession(array $stripeSession, int $productId): string {
+  // Try to get line items
+  if (isset($stripeSession['line_items']['data']) && is_array($stripeSession['line_items']['data'])) {
+    foreach ($stripeSession['line_items']['data'] as $lineItem) {
+      if (!is_array($lineItem)) continue;
+
+      // First try: description field
+      if (!empty($lineItem['description']) && is_string($lineItem['description'])) {
+        return trim($lineItem['description']);
+      }
+
+      // Second try: product name from price object
+      if (isset($lineItem['price']['product']['name']) && is_string($lineItem['price']['product']['name'])) {
+        return trim($lineItem['price']['product']['name']);
+      }
+    }
+  }
+
+  // Fallback: use product ID
+  return $productId > 0 ? "Product #$productId" : "Unknown Product";
 }
 
   /* ========================= Rendering ========================= */
