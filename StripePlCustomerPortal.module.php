@@ -661,6 +661,18 @@ public function getPurchasesData(User $user): array {
       if ($endRaw === null && (!$p || !$p->id)) {
         $stripeSession = (array) $item->meta('stripe_session');
         $stripeProductId = $this->extractStripeProductId($stripeSession);
+
+        // DEBUG: Log what we're looking for
+        if ($this->wire('config')->debug) {
+          $this->wire('log')->save('spl-debug', sprintf(
+            "Unmapped purchase debugging:\n  PW Product ID: %s\n  Stripe Product ID: %s\n  period_end_map keys: %s\n  Map content: %s",
+            $pid,
+            $stripeProductId ?: 'NULL',
+            implode(', ', array_keys($map)),
+            json_encode($map, JSON_PRETTY_PRINT)
+          ));
+        }
+
         if ($stripeProductId) {
           $lookupKey = $stripeProductId;
           $endRaw   = $map[$lookupKey] ?? null;
@@ -1104,9 +1116,35 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
      
      /** Render purchases as a compact table (now using buildStatusLabel()). */
 private function renderPurchasesTable(User $user): string {
-     
+       // DEBUG MODE: Add ?debug=1 to URL to see period_end_map analysis
+       $debugMode = $this->wire('input')->get->int('debug') === 1;
+       $debugOutput = '';
+
        $rows = $this->getPurchasesData($user);
        if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+
+       // DEBUG: Show raw data for unmapped purchases
+       if ($debugMode) {
+         $debugOutput .= '<div class="alert alert-info mb-4"><h4>DEBUG MODE</h4>';
+         foreach ($user->spl_purchases as $item) {
+           $map = (array) $item->meta('period_end_map');
+           $pids = (array) $item->meta('product_ids');
+           $session = (array) $item->meta('stripe_session');
+
+           $debugOutput .= '<hr><strong>Purchase ' . $item->id . '</strong><br>';
+           $debugOutput .= '<strong>Product IDs:</strong> ' . json_encode($pids) . '<br>';
+           $debugOutput .= '<strong>Period End Map Keys:</strong> ' . implode(', ', array_keys($map)) . '<br>';
+           $debugOutput .= '<strong>Period End Map:</strong><pre>' . json_encode($map, JSON_PRETTY_PRINT) . '</pre>';
+
+           // Extract Stripe Product ID
+           if (isset($session['line_items']['data'][0]['price']['product'])) {
+             $prod = $session['line_items']['data'][0]['price']['product'];
+             $stripeId = is_string($prod) ? $prod : ($prod['id'] ?? 'N/A');
+             $debugOutput .= '<strong>Stripe Product ID from line_items:</strong> ' . htmlspecialchars($stripeId) . '<br>';
+           }
+         }
+         $debugOutput .= '</div>';
+       }
      
        $resolveCustomerId = function(User $u, int $productId): ?string {
          if (!$u->hasField('spl_purchases') || !$u->spl_purchases->count()) return null;
@@ -1134,8 +1172,9 @@ private function renderPurchasesTable(User $user): string {
        $returnUrl  = $this->wire('page')->httpUrl;
      
        $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
-     
-       $out  = '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
+
+       $out  = $debugOutput; // Add debug info at the top
+       $out .= '<h3 class="mb-3">' . $this->tLocal('ui.purchases.title') . '</h3>';
        $out .= '<div class="table-responsive"><table class="table table-sm align-middle">';
        $out .= '<thead><tr>'
              . '<th style="width:180px;">' . $this->tLocal('ui.table.head.date') . '</th>'
