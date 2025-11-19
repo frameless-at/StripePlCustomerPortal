@@ -619,7 +619,36 @@ public function getPurchasesData(User $user): array {
     foreach ((array) $item->meta('product_ids') as $pidRaw) {
       $pid = (int) $pidRaw;
       $p   = $byId[$pid] ?? null;
-      if (!$p || !$p->id) continue;
+
+      // BUGFIX: Don't skip purchases without page mapping
+      // Use fallback data if product page doesn't exist
+      $productTitle = '';
+      $productUrl   = '';
+      $category     = '';
+      $thumbUrl     = '';
+
+      if ($p && $p->id) {
+        // Product page exists - use page data
+        $productTitle = (string) $p->title;
+        $productUrl   = (bool) $p->get('requires_access') ? $p->httpUrl : '';
+        $category     = (string)($p->get('product_category') ?: $p->template->label ?: $p->template->name);
+
+        // First available image field (any name)
+        foreach ($p->fields as $f) {
+          if ($f->type instanceof \ProcessWire\FieldtypeImage) {
+            $imgs = $p->get($f->name);
+            if ($imgs && $imgs->count()) {
+              $thumbUrl = $imgs->first()->size(800, 600)->url;
+            }
+            break;
+          }
+        }
+      } else {
+        // Product page doesn't exist - extract from Stripe metadata
+        $stripeSession = (array) $item->meta('stripe_session');
+        $productTitle = $this->extractProductNameFromStripeSession($stripeSession, $pid);
+        $category     = 'Stripe Product';
+      }
 
       // Derive status/access
       $endRaw   = $map[(string)$pid] ?? null;
@@ -647,27 +676,12 @@ public function getPurchasesData(User $user): array {
         $isActive  = true;
       }
 
-      // Category/label for tabs
-      $category = (string)($p->get('product_category') ?: $p->template->label ?: $p->template->name);
-
-      // First available image field (any name)
-      $thumbUrl = '';
-      foreach ($p->fields as $f) {
-        if ($f->type instanceof \ProcessWire\FieldtypeImage) {
-          $imgs = $p->get($f->name);
-          if ($imgs && $imgs->count()) {
-            $thumbUrl = $imgs->first()->size(800, 600)->url;
-          }
-          break;
-        }
-      }
-
       $rows[] = [
         'purchase_ts'   => $ts,
         'purchase_date' => $date,
-        'product_id'    => (int) $p->id,
-        'product_title' => (string) $p->title,
-        'product_url'   => (bool) $p->get('requires_access') ? $p->httpUrl : '',
+        'product_id'    => $pid,
+        'product_title' => $productTitle,
+        'product_url'   => $productUrl,
         'thumb_url'     => $thumbUrl,
         'category'      => $category,
         'status_key'    => $statusKey,    // 'active'|'active_until'|'expired_on'|'paused'|'canceled'
@@ -679,6 +693,36 @@ public function getPurchasesData(User $user): array {
 
   usort($rows, fn($a,$b)=> $b['purchase_ts'] <=> $a['purchase_ts']);
   return $rows;
+}
+
+/**
+ * Extract product name from Stripe session metadata.
+ * Tries multiple fields in order: line_items description, product name, fallback to ID.
+ *
+ * @param array $stripeSession The stripe_session metadata array
+ * @param int $productId The product ID for fallback
+ * @return string Product name or "Product #[id]" as fallback
+ */
+private function extractProductNameFromStripeSession(array $stripeSession, int $productId): string {
+  // Try to get line items
+  if (isset($stripeSession['line_items']['data']) && is_array($stripeSession['line_items']['data'])) {
+    foreach ($stripeSession['line_items']['data'] as $lineItem) {
+      if (!is_array($lineItem)) continue;
+
+      // First try: description field
+      if (!empty($lineItem['description']) && is_string($lineItem['description'])) {
+        return trim($lineItem['description']);
+      }
+
+      // Second try: product name from price object
+      if (isset($lineItem['price']['product']['name']) && is_string($lineItem['price']['product']['name'])) {
+        return trim($lineItem['price']['product']['name']);
+      }
+    }
+  }
+
+  // Fallback: use product ID
+  return $productId > 0 ? "Product #$productId" : "Unknown Product";
 }
 
   /* ========================= Rendering ========================= */
@@ -898,12 +942,16 @@ public function getPurchasesData(User $user): array {
   public function renderPurchasesGrid(User $user, array $opts = []): string {
     $rows = $this->getPurchasesData($user);
     if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-  
+
     $seen = []; $usable = [];
     foreach ($rows as $r) {
       $keep = ($r['status_key'] === 'active') ||
               ($r['status_key'] === 'active_until' && $r['is_active'] === true);
       if (!$keep) continue;
+
+      // Skip purchases without page mapping (no URL = no valid product page)
+      if (empty($r['product_url'])) continue;
+
       $pid = (int)$r['product_id'];
       if (isset($seen[$pid])) continue;
       $seen[$pid] = true;
@@ -960,12 +1008,13 @@ public function getPurchasesData(User $user): array {
     // 1) active/purchased cards
     $ownedHtml = $this->renderPurchasesGrid($user);
   
-    // 2) collect active-owned product IDs
+    // 2) collect active-owned product IDs (only those with valid page mapping)
     $rows = $this->getPurchasesData($user);
     $ownedActiveIds = [];
     foreach ($rows as $r) {
-      if ($r['status_key'] === 'active' ||
-         ($r['status_key'] === 'active_until' && $r['is_active'] === true)) {
+      if (($r['status_key'] === 'active' ||
+           ($r['status_key'] === 'active_until' && $r['is_active'] === true))
+          && !empty($r['product_url'])) {
         $ownedActiveIds[(int) $r['product_id']] = true;
       }
     }
