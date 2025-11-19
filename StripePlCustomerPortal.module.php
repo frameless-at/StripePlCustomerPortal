@@ -26,7 +26,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.5',
+      'version'  => '0.1.6',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'autoload' => true,
@@ -626,6 +626,7 @@ public function getPurchasesData(User $user): array {
       $productUrl   = '';
       $category     = '';
       $thumbUrl     = '';
+      $stripeSession = (array) $item->meta('stripe_session'); // Always load for unmapped key lookup
 
       if ($p && $p->id) {
         // Product page exists - use page data
@@ -645,15 +646,21 @@ public function getPurchasesData(User $user): array {
         }
       } else {
         // Product page doesn't exist - extract from Stripe metadata
-        $stripeSession = (array) $item->meta('stripe_session');
         $productTitle = $this->extractProductNameFromStripeSession($stripeSession, $pid);
         $category     = 'Stripe Product';
       }
 
       // Derive status/access
-      $endRaw   = $map[(string)$pid] ?? null;
-      $paused   = array_key_exists($pid . '_paused', $map);
-      $canceled = array_key_exists($pid . '_canceled', $map);
+      // BUGFIX: For unmapped purchases (pid=0), period_end_map uses "0#prod_XXX" as key
+      $lookupKey = (string)$pid;
+      if ($pid === 0 && !empty($stripeSession['line_items']['data'][0]['price']['product']['id'])) {
+        $stripeProductId = $stripeSession['line_items']['data'][0]['price']['product']['id'];
+        $lookupKey = "0#{$stripeProductId}";
+      }
+
+      $endRaw   = $map[$lookupKey] ?? null;
+      $paused   = array_key_exists($lookupKey . '_paused', $map);
+      $canceled = array_key_exists($lookupKey . '_canceled', $map);
 
       $statusKey   = '';
       $statusUntil = null;
