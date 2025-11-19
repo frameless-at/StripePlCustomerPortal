@@ -942,12 +942,16 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
   public function renderPurchasesGrid(User $user, array $opts = []): string {
     $rows = $this->getPurchasesData($user);
     if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
-  
+
     $seen = []; $usable = [];
     foreach ($rows as $r) {
       $keep = ($r['status_key'] === 'active') ||
               ($r['status_key'] === 'active_until' && $r['is_active'] === true);
       if (!$keep) continue;
+
+      // Skip purchases without page mapping (no URL = no valid product page)
+      if (empty($r['product_url'])) continue;
+
       $pid = (int)$r['product_id'];
       if (isset($seen[$pid])) continue;
       $seen[$pid] = true;
@@ -1004,12 +1008,13 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     // 1) active/purchased cards
     $ownedHtml = $this->renderPurchasesGrid($user);
   
-    // 2) collect active-owned product IDs
+    // 2) collect active-owned product IDs (only those with valid page mapping)
     $rows = $this->getPurchasesData($user);
     $ownedActiveIds = [];
     foreach ($rows as $r) {
-      if ($r['status_key'] === 'active' ||
-         ($r['status_key'] === 'active_until' && $r['is_active'] === true)) {
+      if (($r['status_key'] === 'active' ||
+           ($r['status_key'] === 'active_until' && $r['is_active'] === true))
+          && !empty($r['product_url'])) {
         $ownedActiveIds[(int) $r['product_id']] = true;
       }
     }
