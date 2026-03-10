@@ -26,7 +26,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.6',
+      'version'  => '0.1.7',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'autoload' => true,
@@ -698,6 +698,35 @@ public function getPurchasesData(User $user): array {
     }
   }
 
+  // spl_free_access: directly granted delivery pages → always active, never in spl_purchases
+  if ($user->hasField('spl_free_access') && $user->spl_free_access->count()) {
+    $existingPids = array_column($rows, 'product_id');
+    foreach ($user->spl_free_access as $deliveryPage) {
+      if (!$deliveryPage || !$deliveryPage->id) continue;
+      $pid = (int) $deliveryPage->id;
+      if (in_array($pid, $existingPids, true)) continue; // already covered by a purchase
+
+      // spl_free_access stores delivery (hidden) pages; parent = sales page with images/title
+      $salesPage = ($deliveryPage->parent && $deliveryPage->parent->id)
+        ? $deliveryPage->parent
+        : $deliveryPage;
+
+      $thumbUrl = $this->productThumbUrl($deliveryPage) ?: $this->productThumbUrl($salesPage);
+      $rows[] = [
+        'purchase_ts'   => 0,
+        'purchase_date' => '',
+        'product_id'    => $pid,
+        'product_title' => (string) $salesPage->title,
+        'product_url'   => $deliveryPage->httpUrl,
+        'thumb_url'     => $thumbUrl,
+        'category'      => (string)($salesPage->get('product_category') ?: $salesPage->template->label ?: $salesPage->template->name),
+        'status_key'    => 'active',
+        'status_until'  => null,
+        'is_active'     => true,
+      ];
+    }
+  }
+
   usort($rows, fn($a,$b)=> $b['purchase_ts'] <=> $a['purchase_ts']);
   return $rows;
 }
@@ -906,6 +935,9 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
   .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
     text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  .spl-card.spl-no-img .position-relative{min-height:120px;background:#343a40}
+  .spl-card.spl-no-img .spl-grad{display:none}
+  .spl-card.spl-no-img .spl-title{top:0;bottom:0;display:flex;align-items:center;justify-content:center}
   </style>';
 
     $badge = function(array $r): string {
@@ -920,12 +952,13 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     $out = $css;
     foreach ($usable as $r) {
       $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
-      $imgTag = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
-      $anchor = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
+      $imgTag  = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
+      $noImg   = $r['thumb_url'] ? '' : ' spl-no-img';
+      $anchor  = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
 
       $out .= '
         <div class="col-12 col-sm-6 col-lg-4">
-          <div class="card spl-card shadow-sm">
+          <div class="card spl-card' . $noImg . ' shadow-sm">
             <div class="position-relative">
               ' . $imgTag . '
               <div class="spl-grad"></div>
@@ -959,6 +992,19 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       }
     }
 
+    // spl_free_access: also exclude delivery page ID + parent (sales page) ID
+    // so they never appear in the gray/unowned section regardless of requires_access mapping
+    $user = $this->wire('user');
+    if ($user->hasField('spl_free_access')) {
+      foreach ($user->spl_free_access as $deliveryPage) {
+        if (!$deliveryPage || !$deliveryPage->id) continue;
+        $ownedActiveIds[(int) $deliveryPage->id] = true;
+        if ($deliveryPage->parent && $deliveryPage->parent->id) {
+          $ownedActiveIds[(int) $deliveryPage->parent->id] = true;
+        }
+      }
+    }
+
     // 3) find all gated products that are NOT actively owned
     $all = $this->findAccessProducts();
     $unowned = [];
@@ -971,6 +1017,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     $css = '<style id="spl-gray-cards">
   .spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
   .spl-card.spl-gray:hover .card-img-top{filter:none;opacity:1}
+  .spl-card.spl-gray.spl-no-img .position-relative{background:#6c757d}
   </style>';
 
     $out = $ownedHtml . $css;
@@ -978,12 +1025,13 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     // 5) render unowned cards in gray
     foreach ($unowned as $p) {
       $title = htmlspecialchars((string) $p->title, ENT_QUOTES);
-      $thumb = $this->productThumbUrl($p);
-      $img   = $thumb ? '<img class="card-img-top" src="' . htmlspecialchars($thumb, ENT_QUOTES) . '" alt="">' : '';
+      $thumb  = $this->productThumbUrl($p);
+      $img    = $thumb ? '<img class="card-img-top" src="' . htmlspecialchars($thumb, ENT_QUOTES) . '" alt="">' : '';
+      $noImg  = $thumb ? '' : ' spl-no-img';
 
       $out .= '
         <div class="col-12 col-sm-6 col-lg-4">
-          <div class="card spl-card spl-gray shadow-sm">
+          <div class="card spl-card spl-gray' . $noImg . ' shadow-sm">
             <div class="position-relative">
               ' . $img . '
               <div class="spl-grad"></div>
