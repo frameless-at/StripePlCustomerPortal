@@ -374,6 +374,8 @@ class StripePlCustomerPortal extends WireData implements Module {
       'modal.login.body'  => $this->_('Please sign in to view your purchases.'),
 
       // Status strings (with placeholders)
+      'status.active'         => $this->_('Active'),
+      'status.free_access'    => $this->_('Free access'),
       'status.active_until'   => $this->_('Active until {date}'),
       'status.expired_on'     => $this->_('Expired on {date}'),
       'status.paused'         => $this->_('Paused'),
@@ -590,6 +592,11 @@ class StripePlCustomerPortal extends WireData implements Module {
                    . $this->tLocal('status.active')
                    . '</span>';
 
+          case 'free_access':
+              return '<span class="badge text-bg-info rounded-pill">'
+                   . $this->tLocal('status.free_access')
+                   . '</span>';
+
           default:
               return '';
       }
@@ -720,7 +727,7 @@ public function getPurchasesData(User $user): array {
         'product_url'   => $deliveryPage->httpUrl,
         'thumb_url'     => $thumbUrl,
         'category'      => (string)($salesPage->get('product_category') ?: $salesPage->template->label ?: $salesPage->template->name),
-        'status_key'    => 'active',
+        'status_key'    => 'free_access',
         'status_until'  => null,
         'is_active'     => true,
       ];
@@ -915,6 +922,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     $seen = []; $usable = [];
     foreach ($rows as $r) {
       $keep = ($r['status_key'] === 'active') ||
+              ($r['status_key'] === 'free_access') ||
               ($r['status_key'] === 'active_until' && $r['is_active'] === true);
       if (!$keep) continue;
 
@@ -986,6 +994,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     $ownedActiveIds = [];
     foreach ($rows as $r) {
       if (($r['status_key'] === 'active' ||
+           $r['status_key'] === 'free_access' ||
            ($r['status_key'] === 'active_until' && $r['is_active'] === true))
           && !empty($r['product_url'])) {
         $ownedActiveIds[(int) $r['product_id']] = true;
@@ -1143,7 +1152,9 @@ private function renderPurchasesTable(User $user): string {
     $status = $this->buildStatusLabel($r);
 
     $out .= '<tr>'
-          . '<td style="white-space:nowrap;">' . $h($r['purchase_date']) . '</td>'
+          . '<td style="white-space:nowrap;">'
+          . ($r['purchase_date'] !== '' ? $h($r['purchase_date']) : '<span class="text-muted">—</span>')
+          . '</td>'
           . '<td>' . $prodHtml . '</td>'
           . '<td>' . $status . '</td>'
           . '<td style="text-align:right">' . $invoiceLink . '</td>'
