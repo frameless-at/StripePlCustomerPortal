@@ -29,6 +29,7 @@ class StripePlCustomerPortal extends WireData implements Module {
       'version'  => '0.1.7',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
+      'href'     => 'https://github.com/frameless-at/StripePlCustomerPortal',
       'autoload' => true,
       'singular' => true,
       'requires' => ['ProcessWire>=3.0.210', 'StripePaymentLinks'],
