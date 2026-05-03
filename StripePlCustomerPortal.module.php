@@ -507,6 +507,8 @@ class StripePlCustomerPortal extends WireData implements Module {
    </div>';
 
    $content .= $portal->renderAccount('grid-all');
+
+   echo $content;
    PHP;
        if (is_dir($config->paths->templates)) {
          @file_put_contents($tplFile, $code, LOCK_EX);
