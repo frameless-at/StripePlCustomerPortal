@@ -16,7 +16,7 @@ use Stripe\Exception\ApiErrorException;
  *
  * Requires: ProcessWire 3.0.210+, StripePaymentLinks.
  */
-class StripePlCustomerPortal extends WireData implements Module {
+class StripePlCustomerPortal extends WireData implements Module, ConfigurableModule {
 
   /**
    * Module metadata.
@@ -26,7 +26,7 @@ class StripePlCustomerPortal extends WireData implements Module {
   public static function getModuleInfo(): array {
     return [
       'title'    => 'StripePaymentLinks Customer Portal',
-      'version'  => '0.1.7',
+      'version'  => '0.1.11',
       'summary'  => 'Customer overview at /account using a dedicated template (spl_account).',
       'author'   => 'frameless Media',
       'href'     => 'https://github.com/frameless-at/StripePlCustomerPortal',
@@ -35,6 +35,36 @@ class StripePlCustomerPortal extends WireData implements Module {
       'requires' => ['ProcessWire>=3.0.210', 'StripePaymentLinks'],
       'icon'     => 'user-circle',
     ];
+  }
+
+  /**
+   * Module config: which auth links the /account login modal offers.
+   * The login modal itself is SPL core; CustomerPortal (the integrator) injects
+   * the links via the hookable StripePaymentLinks::loginModalLinks slot.
+   *
+   * @param array $data
+   * @return InputfieldWrapper
+   */
+  public function getModuleConfigInputfields(array $data): InputfieldWrapper {
+    $wrap = new InputfieldWrapper();
+
+    /** @var \ProcessWire\InputfieldCheckbox $f */
+    $f = $this->modules->get('InputfieldCheckbox');
+    $f->name        = 'showLoginLink';
+    $f->label       = $this->_('Login modal: offer passwordless "login link"');
+    $f->description = $this->_('Adds a link that emails a one-time magic login link (uses StripePaymentLinks op=login_link).');
+    if (!empty($data['showLoginLink'])) $f->attr('checked', 'checked');
+    $wrap->add($f);
+
+    /** @var \ProcessWire\InputfieldCheckbox $f2 */
+    $f2 = $this->modules->get('InputfieldCheckbox');
+    $f2->name        = 'showRegister';
+    $f2->label       = $this->_('Login modal: offer "register"');
+    $f2->description = $this->_('Adds a link that opens the registration modal (#plfRegisterModal) and renders it. Requires StripePlFreebies.');
+    if (!empty($data['showRegister'])) $f2->attr('checked', 'checked');
+    $wrap->add($f2);
+
+    return $wrap;
   }
 
   /* ========================= Lifecycle ========================= */
@@ -63,10 +93,25 @@ class StripePlCustomerPortal extends WireData implements Module {
        $root = rtrim($cfg->urls->root, '/') . '/';
 
        if($req === '/account/' && $to === $root) {
+         // Magic-link login: the ?access=/?t= token only exists on /account/.
+         // PW's noAccess redirect would drop it (and the query) on the way to
+         // home, so consume it HERE first. On success, send the user straight
+         // to /account/ (clean URL) instead of home + login modal.
+         $intendedAccount = ($cfg->https ? 'https://' : 'http://') . $cfg->httpHost . $cfg->urls->root . 'account/';
+         if($input->get('access') || $input->get('t')) {
+           $this->spl()->handleAccessParam();
+           if($this->user->isLoggedin()) {
+             $e->arguments(0, $cfg->urls->root . 'account/');
+             return;
+           }
+           // Token invalid/expired: handleAccessParam already queued the "link
+           // expired" modal. Do NOT also auto-open the login modal (would stack
+           // two modals) — just remember the target so a later login returns here.
+           $sess->set('pl_intended_url', $intendedAccount);
+           return;
+         }
          $sess->set('pl_open_login', 1);
-         $sess->set('pl_intended_url',
-           ($cfg->https ? 'https://' : 'http://') . $cfg->httpHost . $cfg->urls->root . 'account/'
-         );
+         $sess->set('pl_intended_url', $intendedAccount);
        }
      });
 
@@ -106,6 +151,53 @@ class StripePlCustomerPortal extends WireData implements Module {
        $key = (string)$e->arguments(0);
        if ($key === 'modal.login.title') { $e->return = $this->tLocal('modal.login.title'); return; }
        if ($key === 'modal.login.body')  { $e->return = $this->tLocal('modal.login.body');  return; }
+     });
+
+     // Inject the configured auth links into SPL's login modal. CustomerPortal is
+     // the integrator: the passwordless login-link (SPL) and the registration
+     // modal (StripePlFreebies) are surfaced here per config checkbox.
+     $this->addHookAfter('StripePaymentLinks::loginModalLinks', function(HookEvent $e) {
+       $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES);
+       $out = '';
+       // Each link gets an info icon with a Bootstrap tooltip (plain-language help).
+       $info = fn($tip) => ' <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" data-bs-toggle="tooltip" title="' . $h($tip) . '"></i>';
+       if ($this->get('showLoginLink')) {
+         $out .= '<div class="mt-2"><a href="#" data-bs-toggle="modal" data-bs-target="#loginLinkModal" data-bs-dismiss="modal">'
+               . $h($this->spl()->t('modal.login.magiclink_link')) . '</a>'
+               . $info($this->tLocal('login.magiclink_tooltip')) . '</div>';
+       }
+       if ($this->get('showRegister') && $this->modules->isInstalled('StripePlFreebies')) {
+         $out .= '<div class="mt-2"><a href="#" data-bs-toggle="modal" data-bs-target="#plfRegisterModal" data-bs-dismiss="modal">'
+               . $h($this->tLocal('login.register_link')) . '</a>'
+               . $info($this->tLocal('login.register_tooltip')) . '</div>';
+       }
+       $e->return .= $out;
+     });
+
+     // Prompt the "set your password" modal on the /account hub too (not just on
+     // gated product pages), so members who arrived via a magic link and still
+     // have must_set_password get reminded here.
+     $this->addHookAfter('StripePaymentLinks::promptSetPasswordOnPage', function(HookEvent $e) {
+       if ($e->return) return;
+       $page = $e->arguments(0);
+       if ($page instanceof Page && $page->template && $page->template->name === 'spl_account') {
+         $e->return = true;
+       }
+     });
+
+     // Provide the registration modal (#plfRegisterModal) on pages that show the
+     // login modal, so the "register" link has something to open. All flows stay
+     // in modals — no extra pages.
+     $this->addHookAfter('Page::render', function(HookEvent $e) {
+       if (!$this->get('showRegister') || !$this->modules->isInstalled('StripePlFreebies')) return;
+       $html = (string) $e->return;
+       if (stripos($html, 'id="loginModal"') === false) return;      // only where the login modal is
+       if (stripos($html, 'id="plfRegisterModal"') !== false) return; // already present
+       $modal = $this->modules->get('StripePlFreebies')->renderRegisterModal([
+         'return_url' => $this->wire('config')->urls->root . 'account/',
+       ]);
+       if ($modal === '') return;
+       $e->return = preg_replace('~</body>~i', $modal . '</body>', $html, 1);
      });
    }
 
@@ -354,6 +446,7 @@ class StripePlCustomerPortal extends WireData implements Module {
       // Headings / UI
       'ui.purchases.title'    => $this->_('Your purchases'),
       'ui.table.no_purchases' => $this->_('No purchases found.'),
+      'ui.filter.all'         => $this->_('All'),
       'ui.table.head.date'    => $this->_('Date'),
       'ui.table.head.product' => $this->_('Product'),
       'ui.table.head.status'  => $this->_('Status'),
@@ -361,18 +454,26 @@ class StripePlCustomerPortal extends WireData implements Module {
       // Button
       'button.edit' => $this->_('Edit my data'),
 
+      // Login modal link (register)
+      'login.register_link' => $this->_('Create an account'),
+      // Tooltips explaining each login-modal link (plain language, for non-tech users)
+      'login.magiclink_tooltip' => $this->_('Never set a password (e.g. after a purchase)? Enter your email and we’ll send you a link to sign in without one. Use the same email address you bought with.'),
+      'login.register_tooltip'  => $this->_('No account yet? Create one here for free (e.g. to get freebies) — no purchase needed.'),
+
       // Profile modal
       'profile.title'          => $this->_('Edit my data'),
       'profile.intro'          => $this->_('Update your account information below.'),
       'profile.save'           => $this->_('Save'),
       'profile.cancel'         => $this->_('Cancel'),
       'label.name'             => $this->_('Full name'),
+      'label.email'            => $this->_('Email'),
+      'profile.email_hint'     => $this->_('This is the address you sign in with. To use a different one, please contact us.'),
       'label.password'         => $this->_('Password'),
       'label.password_confirm' => $this->_('Confirm password'),
 
       // Login-required text (used to override SPL's t())
-      'modal.login.title' => $this->_('Customer Login'),
-      'modal.login.body'  => $this->_('Please sign in to view your purchases.'),
+      'modal.login.title' => $this->_('Sign in'),
+      'modal.login.body'  => $this->_('Please sign in to access your area.'),
 
       // Status strings (with placeholders)
       'status.active'         => $this->_('Active'),
@@ -436,9 +537,27 @@ class StripePlCustomerPortal extends WireData implements Module {
   }
 
   /**
+   * Additively ensure view access for customer + member (if the roles exist) on the
+   * given template. Removes nothing (respects admin adjustments), saves only on an
+   * actual change.
+   */
+  private function ensureAccountViewRoles(\ProcessWire\Template $tpl): void {
+    $roles   = $this->wire('roles');
+    $changed = false;
+    foreach (['customer', 'member'] as $rn) {
+      $r = $roles->get($rn);
+      if (!$r || !$r->id) continue;
+      if (!$tpl->hasRole($r)) { $tpl->addRole($r, 'view'); $changed = true; }
+    }
+    if ($changed) $this->wire('templates')->save($tpl);
+  }
+
+  /**
    * Create/verify template + file + page.
    *
-   * @param bool $writeFile If true, write the template file even if it exists.
+   * @param bool $writeFile Deprecated/no-op for the template file: the file is only
+   *                        created when missing and never overwritten (preserves
+   *                        site customizations across install/upgrade).
    * @return void
    */
    private function ensureAccountTemplateAndPage(bool $writeFile = false): void {
@@ -448,13 +567,24 @@ class StripePlCustomerPortal extends WireData implements Module {
      $config      = $this->wire('config');
      $roles       = $this->wire('roles');
 
-     // --- 1) Fieldgroup: get or create
+     // --- 1) Fieldgroup: get or create. The name MUST match the template name
+     // so ProcessWire treats it as the template's own fieldgroup and allows
+     // inline field editing on the template's "Fields" tab (a differently-named
+     // fieldgroup is shown as a shared/named one that can only be switched).
      /** @var \ProcessWire\Fieldgroup|null $fg */
-     $fg = $fieldgroups->get('fg_spl_account');
+     $fg = $fieldgroups->get('spl_account');
      if (!$fg || !$fg->id) {
-       $fg = new \ProcessWire\Fieldgroup();
-       $fg->name = 'fg_spl_account';
-       $fieldgroups->save($fg);
+       // Migrate the legacy 'fg_spl_account' fieldgroup to the matching name.
+       $legacy = $fieldgroups->get('fg_spl_account');
+       if ($legacy && $legacy->id) {
+         $legacy->name = 'spl_account';
+         $fieldgroups->save($legacy);
+         $fg = $legacy;
+       } else {
+         $fg = new \ProcessWire\Fieldgroup();
+         $fg->name = 'spl_account';
+         $fieldgroups->save($fg);
+       }
      }
 
      // --- 2) Template: get or create
@@ -469,11 +599,15 @@ class StripePlCustomerPortal extends WireData implements Module {
        $templates->save($tpl);
 
        // Default access setup (only applied on creation)
-       $guest    = $roles->get('guest');
-       $customer = $roles->get('customer');
-
+       $guest = $roles->get('guest');
        if ($guest && method_exists($tpl, 'removeRole')) $tpl->removeRole($guest, 'view');
-       if ($customer && method_exists($tpl, 'addRole'))  $tpl->addRole($customer, 'view');
+
+       // View access for customer AND member (if present): the account hub
+       // shows purchases (customer) AND freebies (member) → both may see it.
+       foreach (['customer', 'member'] as $rn) {
+         $r = $roles->get($rn);
+         if ($r && $r->id && method_exists($tpl, 'addRole')) $tpl->addRole($r, 'view');
+       }
 
        $tpl->set('noAccess', 2);        // redirect/render
        $tpl->set('redirectLogin', '/'); // redirect target
@@ -484,11 +618,15 @@ class StripePlCustomerPortal extends WireData implements Module {
          $tpl->fieldgroup = $fg;
          $templates->save($tpl);
        }
+       // Additively: grant the member role view access (if present) — removes nothing.
+       $this->ensureAccountViewRoles($tpl);
      }
 
      // --- 3) Template file /site/templates/spl_account.php
+     // Create ONLY if not present — never overwrite, so that
+     // site adjustments to spl_account.php are preserved across install/upgrade.
      $tplFile = rtrim($config->paths->templates, '/\\') . DIRECTORY_SEPARATOR . 'spl_account.php';
-     if ($writeFile || !is_file($tplFile)) {
+     if (!is_file($tplFile)) {
        $code = <<<'PHP'
    <?php namespace ProcessWire;
    /** @var \ProcessWire\Modules $modules */
@@ -642,16 +780,8 @@ public function getPurchasesData(User $user): array {
         $productUrl   = (bool) $p->get('requires_access') ? $p->httpUrl : '';
         $category     = (string)($p->get('product_category') ?: $p->template->label ?: $p->template->name);
 
-        // First available image field (any name)
-        foreach ($p->fields as $f) {
-          if ($f->type instanceof \ProcessWire\FieldtypeImage) {
-            $imgs = $p->get($f->name);
-            if ($imgs && $imgs->count()) {
-              $thumbUrl = $imgs->first()->size(800, 600)->url;
-            }
-            break;
-          }
-        }
+        // Prefer the sales page (parent) image, fall back to the delivery page's own.
+        $thumbUrl = $this->deliveryThumbUrl($p);
       } else {
         // Product page doesn't exist - extract from Stripe metadata
         $productTitle = $this->extractProductNameFromStripeSession($stripeSession, $pid);
@@ -719,7 +849,7 @@ public function getPurchasesData(User $user): array {
         ? $deliveryPage->parent
         : $deliveryPage;
 
-      $thumbUrl = $this->productThumbUrl($deliveryPage) ?: $this->productThumbUrl($salesPage);
+      $thumbUrl = $this->deliveryThumbUrl($deliveryPage);
       $rows[] = [
         'purchase_ts'   => 0,
         'purchase_date' => '',
@@ -775,9 +905,11 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    * Public method so the template can call it.
    *
    * @param string $view
+   * @param string $appendCards Extra card columns appended INSIDE the same .row g-3
+   *                            (e.g. freebies from StripePlFreebies::renderFreebieCards()).
    * @return string
    */
-  public function renderAccount(string $view = 'grid'): string {
+  public function renderAccount(string $view = 'grid', string $appendCards = ''): string {
     $user = $this->wire('user');
 
     // Not logged in → NO redirect, open modal instead
@@ -803,6 +935,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     if ($viewParam) $view = $viewParam;
 
     // choose rendering mode
+    $teasers = '';
     switch ($view) {
       case 'table':
         $content = $this->renderPurchasesTable($user);
@@ -811,7 +944,12 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
         $content = $this->renderPurchasesGrid($user);
         break;
       case 'grid-all':
-        $content = $this->renderPurchasesGridAll($user);
+        // Owned products on top; the gray "not yet owned" teasers are rendered
+        // separately so they can be placed AFTER the appended companion cards
+        // (e.g. freebies) — everything the user HAS stays at the top, the
+        // upsell teasers go to the very bottom.
+        $content = $this->renderPurchasesGrid($user);
+        $teasers = $this->renderUnownedProducts($user);
         break;
       default:
         // fallback → future views can be added easily here
@@ -819,8 +957,34 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
         break;
     }
 
-    $content = '<div class="row g-3">' . $content . '</div>';
-    return $this->wrapContainer($content . $this->modalProfileEdit($user));
+    // $appendCards: explicitly passed card columns + hookable extension point.
+    // Companion add-ons (e.g. StripePlFreebies) attach to accountAppendCards()
+    // and thereby appear on EVERY installation in THE SAME .row g-3 behind the
+    // products – without the site's own spl_account.php having to be adjusted.
+    // Order: owned products → companion cards (freebies) → unowned teasers.
+    $appendCards .= $this->accountAppendCards($user, $view);
+    $grid = '<div class="row g-3" id="splGrid">' . $content . $appendCards . $teasers . '</div>';
+
+    // Tag filter only in grid views (the table view has its own purchases-only list).
+    // The filter is self-contained: its JS discovers the tags from the rendered
+    // cards (products AND appended companion cards like freebies), so no server-side
+    // tag collection across modules is needed.
+    $filter = ($view === 'grid' || $view === 'grid-all') ? $this->renderTagFilter() : '';
+
+    return $this->wrapContainer($filter . $grid . $this->modalProfileEdit($user));
+  }
+
+  /**
+   * Hookable extension point: additional card columns for the account grid.
+   * Companion add-ons attach via addHookAfter('StripePlCustomerPortal::accountAppendCards')
+   * and return further card HTML (col-* columns, optionally cardCss()).
+   *
+   * @param User   $user
+   * @param string $view
+   * @return string
+   */
+  public function ___accountAppendCards(User $user, string $view): string {
+    return '';
   }
 
   /**
@@ -848,8 +1012,21 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    * @return string
    */
   public function renderHeaderButtons(string $activeView = 'grid-all'): string {
+    // The active marker must reflect the actually rendered view,
+    // not just the (possibly fixed) default. ?view= therefore takes precedence.
+    $viewParam = $this->wire('input')->get->text('view');
+    if ($viewParam) $activeView = $viewParam;
+
     $urlBase = $this->wire('page')->url;
     $editBtn = $this->renderEditButton(['class' => 'btn btn-primary btn-sm']);
+
+    // No purchases → nothing to toggle between (the table view would be empty),
+    // so show only the edit button, no grid/table view switcher.
+    $user = $this->wire('user');
+    if (!$user->isLoggedin() || !count($this->getPurchasesData($user))) {
+      return '<div class="d-flex align-items-center">' . $editBtn . '</div>';
+    }
+
     $isGrid  = $activeView === 'grid-all';
     $isTable = $activeView === 'table';
 
@@ -909,6 +1086,17 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     }
     return '';
   }
+
+  /**
+   * Thumb URL for a gated delivery page, preferring its parent (the sales page,
+   * which carries the marketing image) and falling back to the delivery page's
+   * own image fields.
+   */
+  private function deliveryThumbUrl(\ProcessWire\Page $deliveryPage, int $w = 800, int $h = 600): string {
+    $parent   = ($deliveryPage->parent && $deliveryPage->parent->id) ? $deliveryPage->parent : null;
+    $fromSales = $parent ? $this->productThumbUrl($parent, $w, $h) : '';
+    return $fromSales ?: $this->productThumbUrl($deliveryPage, $w, $h);
+  }
   /**
    * Render purchased products as cards (one card per product).
    *
@@ -916,9 +1104,151 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    * @param array $opts
    * @return string
    */
+  /**
+   * Public: CSS for the spl-card overlay style. Emit once per page.
+   * Shared so companion addons (e.g. StripePlFreebies) render identical cards.
+   */
+  public function cardCss(): string {
+    return '<style id="spl-card-overlay-css">
+  .spl-card{position:relative;overflow:hidden;border:0}
+  .spl-card .card-img-top{display:block;width:100%;height:auto}
+  .spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
+    background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
+  .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
+    text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+  .spl-card.spl-no-img .position-relative{min-height:120px;background:#343a40}
+  .spl-card.spl-no-img .spl-grad{display:none}
+  .spl-card.spl-no-img .spl-title{top:0;bottom:0;display:flex;align-items:center;justify-content:center}
+  </style>';
+  }
+
+  /**
+   * Public: render a single product-style card (one grid column).
+   * Single source of truth for the card look, reused by the purchases grid AND
+   * by companion addons so everything stays identical.
+   *
+   * @param string $title
+   * @param string $url        Link target (whole card becomes clickable). Empty = not clickable.
+   * @param string $thumbUrl   Image URL (empty = solid placeholder).
+   * @param string $badgeHtml  Optional top-right badge HTML.
+   * @param string $extraClass Extra classes on the card (e.g. 'spl-gray').
+   */
+  public function renderCard(string $title, string $url = '', string $thumbUrl = '', string $badgeHtml = '', string $extraClass = '', ?\ProcessWire\Page $page = null): string {
+    $h      = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
+    $imgTag = $thumbUrl ? '<img class="card-img-top" src="' . $h($thumbUrl) . '" alt="">' : '';
+    $noImg  = $thumbUrl ? '' : ' spl-no-img';
+    $cls    = 'card spl-card' . $noImg . ($extraClass !== '' ? ' ' . $extraClass : '') . ' shadow-sm';
+    $anchor = $url ? '<a href="' . $h($url) . '" class="stretched-link"></a>' : '';
+
+    // Carry the card's tags so the tag filter can show/hide it (site-agnostic:
+    // tags come from the hookable cardTags(), the site maps them to its field).
+    $tagsAttr = '';
+    if ($page && $page->id) {
+      $tags = $this->cardTagSlugs($page);
+      if ($tags) $tagsAttr = ' data-spl-tags="' . $h(implode(' ', $tags)) . '"';
+    }
+
+    return '
+        <div class="col-12 col-sm-6 col-lg-4"' . $tagsAttr . '>
+          <div class="' . $cls . '">
+            <div class="position-relative">
+              ' . $imgTag . '
+              <div class="spl-grad"></div>
+              <div class="spl-title"><h3 class="m-0">' . $h($title) . '</h3></div>
+              <div class="position-absolute top-0 end-0 m-2">' . $badgeHtml . '</div>
+            </div>
+            ' . $anchor . '
+          </div>
+        </div>';
+  }
+
+  /**
+   * Hookable extension point: tags for a card, used by the tag filter.
+   * Returns a list of tag strings for the given page. Default: none — sites
+   * attach via addHookAfter('StripePlCustomerPortal::cardTags') and map their
+   * own field (e.g. return explode(' ', $page->tags)). Site-agnostic by design.
+   *
+   * @param Page $page
+   * @return array
+   */
+  public function ___cardTags(\ProcessWire\Page $page): array {
+    return [];
+  }
+
+  /**
+   * Normalize cardTags() into safe, de-duplicated CSS-token slugs.
+   *
+   * @param Page $page
+   * @return array
+   */
+  private function cardTagSlugs(\ProcessWire\Page $page): array {
+    $out = [];
+    foreach ($this->cardTags($page) as $t) {
+      $slug = preg_replace('/[^a-z0-9_-]/', '', strtolower(trim((string) $t)));
+      if ($slug !== '') $out[$slug] = $slug;
+    }
+    return array_values($out);
+  }
+
+  /**
+   * Tag-filter bar + self-contained JS. The script discovers the distinct tags
+   * from the cards present in #splGrid (via their data-spl-tags attribute),
+   * builds the buttons, and shows/hides card columns on click. No jQuery, no
+   * server-side tag collection — works for product AND companion (freebie) cards.
+   */
+  public function renderTagFilter(): string {
+    $allLabel = htmlspecialchars($this->tLocal('ui.filter.all'), ENT_QUOTES);
+    return '<ul id="splFilter" class="nav justify-content-center pb-4" hidden>'
+         . '<li class="px-3 nav-item lead active" data-tag="all"><a role="button">' . $allLabel . '</a></li>'
+         . '</ul>'
+         . '<script>(function(){
+    function init(){
+    var grid = document.getElementById("splGrid");
+    var filter = document.getElementById("splFilter");
+    if (!grid || !filter) return;
+    var cols = Array.prototype.slice.call(grid.children);
+    var tags = {};
+    cols.forEach(function(c){
+      (c.getAttribute("data-spl-tags") || "").split(/\\s+/).forEach(function(t){
+        if (t) tags[t] = (tags[t] || 0) + 1;
+      });
+    });
+    var names = Object.keys(tags).sort();
+    if (!names.length) return; // no tags → keep filter hidden
+    names.forEach(function(t){
+      var li = document.createElement("li");
+      li.className = "px-3 nav-item lead";
+      li.setAttribute("data-tag", t);
+      var a = document.createElement("a");
+      a.setAttribute("role", "button");
+      a.textContent = (t.length <= 3 ? t.toUpperCase() : t.charAt(0).toUpperCase() + t.slice(1));
+      li.appendChild(a);
+      filter.appendChild(li);
+    });
+    filter.hidden = false;
+    filter.addEventListener("click", function(e){
+      var li = e.target.closest("li[data-tag]");
+      if (!li) return;
+      var tag = li.getAttribute("data-tag");
+      filter.querySelectorAll("li").forEach(function(x){ x.classList.remove("active"); });
+      li.classList.add("active");
+      cols.forEach(function(c){
+        var ct = (c.getAttribute("data-spl-tags") || "").split(/\\s+/);
+        c.style.display = (tag === "all" || ct.indexOf(tag) !== -1) ? "" : "none";
+      });
+    });
+    }
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+    else init();
+  })();</script>';
+  }
+
   public function renderPurchasesGrid(User $user, array $opts = []): string {
+    // The "no purchases found" message belongs in the table view (pure
+    // purchase overview). In the grid, empty simply stays empty – so that
+    // appended cards (e.g. freebies) can stand alone without this message.
     $rows = $this->getPurchasesData($user);
-    if (!$rows) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+    if (!$rows) return '';
 
     $seen = []; $usable = [];
     foreach ($rows as $r) {
@@ -935,19 +1265,9 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       $seen[$pid] = true;
       $usable[] = $r;
     }
-    if (!$usable) return '<p>' . $this->tLocal('ui.table.no_purchases') . '</p>';
+    if (!$usable) return '';
 
-    $css = '<style id="spl-card-overlay-css">
-  .spl-card{position:relative;overflow:hidden;border:0}
-  .spl-card .card-img-top{display:block;width:100%;height:auto}
-  .spl-card .spl-grad{position:absolute;left:0;right:0;bottom:0;top:50%;
-    background:linear-gradient(to top,rgba(0,0,0,.5) 0%,rgba(0,0,0,0) 100%)}
-  .spl-card .spl-title{position:absolute;left:0;right:0;bottom:10px;padding:16px 18px;
-    text-align:center;color:#fff;font-weight:700;text-shadow:0 1px 2px rgba(0,0,0,.6)}
-  .spl-card.spl-no-img .position-relative{min-height:120px;background:#343a40}
-  .spl-card.spl-no-img .spl-grad{display:none}
-  .spl-card.spl-no-img .spl-title{top:0;bottom:0;display:flex;align-items:center;justify-content:center}
-  </style>';
+    $css = $this->cardCss();
 
     $badge = function(array $r): string {
       if (($r['status_key'] ?? '') === 'active_until' && !empty($r['status_until'])) {
@@ -960,23 +1280,9 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
 
     $out = $css;
     foreach ($usable as $r) {
-      $title  = htmlspecialchars($r['product_title'], ENT_QUOTES);
-      $imgTag  = $r['thumb_url'] ? '<img class="card-img-top" src="' . htmlspecialchars($r['thumb_url'], ENT_QUOTES) . '" alt="">' : '';
-      $noImg   = $r['thumb_url'] ? '' : ' spl-no-img';
-      $anchor  = $r['product_url'] ? '<a href="' . htmlspecialchars($r['product_url'], ENT_QUOTES) . '" class="stretched-link"></a>' : '';
-
-      $out .= '
-        <div class="col-12 col-sm-6 col-lg-4">
-          <div class="card spl-card' . $noImg . ' shadow-sm">
-            <div class="position-relative">
-              ' . $imgTag . '
-              <div class="spl-grad"></div>
-              <div class="spl-title"><h3 class="m-0">' . $title . '</h3></div>
-              <div class="position-absolute top-0 end-0 m-2">' . $badge($r) . '</div>
-            </div>
-            ' . $anchor . '
-          </div>
-        </div>';
+      $productPage = $this->wire('pages')->get((int) $r['product_id']);
+      $out .= $this->renderCard($r['product_title'], $r['product_url'], $r['thumb_url'], $badge($r),
+        '', ($productPage && $productPage->id) ? $productPage : null);
     }
     return $out;
   }
@@ -987,10 +1293,23 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    * @return string
    */
   public function renderPurchasesGridAll(User $user): string {
-    // 1) active/purchased cards
-    $ownedHtml = $this->renderPurchasesGrid($user);
+    // Owned cards first, then the gray "not yet owned" teasers. renderAccount may
+    // recompose these with companion cards (e.g. freebies) in between, so the
+    // teasers stay at the very bottom — see renderAccount().
+    return $this->renderPurchasesGrid($user) . $this->renderUnownedProducts($user);
+  }
 
-    // 2) collect active-owned product IDs (only those with valid page mapping)
+  /**
+   * Render the gated products the user does NOT actively own, as gray teaser
+   * cards. Returns '' when the user owns everything. Kept separate so callers
+   * can place it AFTER companion cards like freebies — the "you don't have this
+   * yet" teasers belong at the very bottom of the grid.
+   *
+   * @param User $user
+   * @return string
+   */
+  public function renderUnownedProducts(User $user): string {
+    // collect active-owned product IDs (only those with valid page mapping)
     $rows = $this->getPurchasesData($user);
     $ownedActiveIds = [];
     foreach ($rows as $r) {
@@ -1015,41 +1334,25 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       }
     }
 
-    // 3) find all gated products that are NOT actively owned
+    // find all gated products that are NOT actively owned
     $all = $this->findAccessProducts();
     $unowned = [];
     foreach ($all as $p) {
       if (!isset($ownedActiveIds[(int) $p->id])) $unowned[] = $p;
     }
-    if (!$unowned) return $ownedHtml;
+    if (!$unowned) return '';
 
-    // 4) CSS only for gray overlay
-    $css = '<style id="spl-gray-cards">
+    // CSS only for gray overlay
+    $out = '<style id="spl-gray-cards">
   .spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
   .spl-card.spl-gray:hover .card-img-top{filter:none;opacity:1}
   .spl-card.spl-gray.spl-no-img .position-relative{background:#6c757d}
   </style>';
 
-    $out = $ownedHtml . $css;
-
-    // 5) render unowned cards in gray
+    // render unowned cards in gray (via renderCard so they carry tags too).
+    // Prefer the sales page (parent) image, fall back to the delivery page's own.
     foreach ($unowned as $p) {
-      $title = htmlspecialchars((string) $p->title, ENT_QUOTES);
-      $thumb  = $this->productThumbUrl($p);
-      $img    = $thumb ? '<img class="card-img-top" src="' . htmlspecialchars($thumb, ENT_QUOTES) . '" alt="">' : '';
-      $noImg  = $thumb ? '' : ' spl-no-img';
-
-      $out .= '
-        <div class="col-12 col-sm-6 col-lg-4">
-          <div class="card spl-card spl-gray' . $noImg . ' shadow-sm">
-            <div class="position-relative">
-              ' . $img . '
-              <div class="spl-grad"></div>
-              <div class="spl-title"><h3 class="m-0">' . $title . '</h3></div>
-            </div>
-            <a href="' . htmlspecialchars($p->httpUrl, ENT_QUOTES) . '" class="stretched-link"></a>
-          </div>
-        </div>';
+      $out .= $this->renderCard((string) $p->title, $p->httpUrl, $this->deliveryThumbUrl($p), '', 'spl-gray', $p);
     }
 
     return $out;
@@ -1207,10 +1510,12 @@ private function renderPurchasesTable(User $user): string {
     $btnCancel = $this->tLocal('profile.cancel');
 
     // new i18n keys (Labels)
+    $labelEmail   = $this->tLocal('label.email');
     $labelName    = $this->tLocal('label.name');
     $labelPass    = $this->tLocal('label.password');
     $labelPass2   = $this->tLocal('label.password_confirm');
     $prefillTitle = $user ? (string) $user->title : '';
+    $prefillEmail = $user ? (string) $user->email : '';
 
     $modal = [
       'id'    => 'profileModal',
@@ -1224,6 +1529,9 @@ private function renderPurchasesTable(User $user): string {
         ],
         'bodyIntro' => $introHtml,
         'fields'    => [
+          // Email shown read-only (identity/login, not editable here) as static
+          // plaintext, with a hint explaining why it can't be edited.
+          ['type' => 'email', 'name' => 'email', 'label' => $labelEmail, 'value' => $prefillEmail, 'inputClass' => 'form-control-plaintext', 'help' => $this->tLocal('profile.email_hint'), 'attrs' => ['readonly' => true, 'autocomplete' => 'email']],
           ['type' => 'text', 'name' => 'title', 'label' => $labelName, 'value' => $prefillTitle, 'attrs' => ['autocomplete' => 'name']],
           ['type' => 'password', 'name' => 'password', 'label' => $labelPass, 'attrs' => ['autocomplete' => 'new-password']],
           ['type' => 'password', 'name' => 'password_confirm', 'label' => $labelPass2, 'attrs' => ['autocomplete' => 'new-password']],
@@ -1343,7 +1651,15 @@ private function renderPurchasesTable(User $user): string {
     try {
       $u->of(false);
       if ($newTitle !== '' && $newTitle !== (string) $u->title) $u->title = $newTitle;
-      if ($pass1 !== '') $u->pass = $pass1;
+      if ($pass1 !== '') {
+        // Setting a password here also satisfies must_set_password — otherwise
+        // the "set your password" modal would keep reappearing. Mirror SPL's
+        // set_password handler (clear the flag + the one-time access token).
+        $u->pass = $pass1;
+        if ($u->hasField('must_set_password')) $u->must_set_password = 0;
+        if ($u->hasField('access_token'))      $u->access_token = '';
+        if ($u->hasField('access_expires'))    $u->access_expires = 0;
+      }
       $this->wire('users')->save($u, ['quiet' => true]);
 
       $ret = $this->wire('sanitizer')->url((string) $this->wire('input')->post->return_url) ?: $this->wire('page')->httpUrl;
