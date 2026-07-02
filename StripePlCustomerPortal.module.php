@@ -175,6 +175,13 @@ class StripePlCustomerPortal extends WireData implements Module, ConfigurableMod
        $e->return .= $out;
      });
 
+     // When the passwordless login-link is offered, it REPLACES the "forgot
+     // password" reset link (both solve "I can't sign in"; the magic link is the
+     // simpler path and password changes stay in the profile modal).
+     $this->addHookAfter('StripePaymentLinks::showLoginResetLink', function(HookEvent $e) {
+       if ($this->get('showLoginLink')) $e->return = false;
+     });
+
      // Prompt the "set your password" modal on the /account hub too (not just on
      // gated product pages), so members who arrived via a magic link and still
      // have must_set_password get reminded here.
