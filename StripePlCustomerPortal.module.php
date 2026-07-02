@@ -16,7 +16,7 @@ use Stripe\Exception\ApiErrorException;
  *
  * Requires: ProcessWire 3.0.210+, StripePaymentLinks.
  */
-class StripePlCustomerPortal extends WireData implements Module, ConfigurableModule {
+class StripePlCustomerPortal extends WireData implements Module {
 
   /**
    * Module metadata.
@@ -32,41 +32,11 @@ class StripePlCustomerPortal extends WireData implements Module, ConfigurableMod
       'href'     => 'https://github.com/frameless-at/StripePlCustomerPortal',
       'autoload'     => true,
       'singular'     => true,
-      'configurable' => true,
       'requires'     => ['ProcessWire>=3.0.210', 'StripePaymentLinks'],
       'icon'         => 'user-circle',
     ];
   }
 
-  /**
-   * Module config: which auth links the /account login modal offers.
-   * The login modal itself is SPL core; CustomerPortal (the integrator) injects
-   * the links via the hookable StripePaymentLinks::loginModalLinks slot.
-   *
-   * @param array $data
-   * @return InputfieldWrapper
-   */
-  public function getModuleConfigInputfields(array $data): InputfieldWrapper {
-    $wrap = new InputfieldWrapper();
-
-    /** @var \ProcessWire\InputfieldCheckbox $f */
-    $f = $this->modules->get('InputfieldCheckbox');
-    $f->name        = 'showLoginLink';
-    $f->label       = $this->_('Login modal: offer passwordless "login link"');
-    $f->description = $this->_('Adds a link that emails a one-time magic login link (uses StripePaymentLinks op=login_link).');
-    if (!empty($data['showLoginLink'])) $f->attr('checked', 'checked');
-    $wrap->add($f);
-
-    /** @var \ProcessWire\InputfieldCheckbox $f2 */
-    $f2 = $this->modules->get('InputfieldCheckbox');
-    $f2->name        = 'showRegister';
-    $f2->label       = $this->_('Login modal: offer "register"');
-    $f2->description = $this->_('Adds a link that opens the registration modal (#plfRegisterModal) and renders it. Requires StripePlFreebies.');
-    if (!empty($data['showRegister'])) $f2->attr('checked', 'checked');
-    $wrap->add($f2);
-
-    return $wrap;
-  }
 
   /* ========================= Lifecycle ========================= */
 
@@ -154,33 +124,8 @@ class StripePlCustomerPortal extends WireData implements Module, ConfigurableMod
        if ($key === 'modal.login.body')  { $e->return = $this->tLocal('modal.login.body');  return; }
      });
 
-     // Inject the configured auth links into SPL's login modal. CustomerPortal is
-     // the integrator: the passwordless login-link (SPL) and the registration
-     // modal (StripePlFreebies) are surfaced here per config checkbox.
-     $this->addHookAfter('StripePaymentLinks::loginModalLinks', function(HookEvent $e) {
-       $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES);
-       $out = '';
-       // Each link gets an info icon with a Bootstrap tooltip (plain-language help).
-       $info = fn($tip) => ' <i class="bi bi-info-circle text-muted ms-1" style="cursor:help" data-bs-toggle="tooltip" title="' . $h($tip) . '"></i>';
-       if ($this->get('showLoginLink')) {
-         $out .= '<div class="mt-2"><a href="#" data-bs-toggle="modal" data-bs-target="#loginLinkModal" data-bs-dismiss="modal">'
-               . $h($this->spl()->t('modal.login.magiclink_link')) . '</a>'
-               . $info($this->tLocal('login.magiclink_tooltip')) . '</div>';
-       }
-       if ($this->get('showRegister') && $this->modules->isInstalled('StripePlFreebies')) {
-         $out .= '<div class="mt-2"><a href="#" data-bs-toggle="modal" data-bs-target="#plfRegisterModal" data-bs-dismiss="modal">'
-               . $h($this->tLocal('login.register_link')) . '</a>'
-               . $info($this->tLocal('login.register_tooltip')) . '</div>';
-       }
-       $e->return .= $out;
-     });
-
-     // When the passwordless login-link is offered, it REPLACES the "forgot
-     // password" reset link (both solve "I can't sign in"; the magic link is the
-     // simpler path and password changes stay in the profile modal).
-     $this->addHookAfter('StripePaymentLinks::showLoginResetLink', function(HookEvent $e) {
-       if ($this->get('showLoginLink')) $e->return = false;
-     });
+     // The login procedure (which auth links the login modal offers) is decided
+     // entirely by StripePaymentLinks core config (pl_login_procedure) now.
 
      // Prompt the "set your password" modal on the /account hub too (not just on
      // gated product pages), so members who arrived via a magic link and still
@@ -193,20 +138,6 @@ class StripePlCustomerPortal extends WireData implements Module, ConfigurableMod
        }
      });
 
-     // Provide the registration modal (#plfRegisterModal) on pages that show the
-     // login modal, so the "register" link has something to open. All flows stay
-     // in modals — no extra pages.
-     $this->addHookAfter('Page::render', function(HookEvent $e) {
-       if (!$this->get('showRegister') || !$this->modules->isInstalled('StripePlFreebies')) return;
-       $html = (string) $e->return;
-       if (stripos($html, 'id="loginModal"') === false) return;      // only where the login modal is
-       if (stripos($html, 'id="plfRegisterModal"') !== false) return; // already present
-       $modal = $this->modules->get('StripePlFreebies')->renderRegisterModal([
-         'return_url' => $this->wire('config')->urls->root . 'account/',
-       ]);
-       if ($modal === '') return;
-       $e->return = preg_replace('~</body>~i', $modal . '</body>', $html, 1);
-     });
    }
 
   /**
@@ -461,12 +392,6 @@ class StripePlCustomerPortal extends WireData implements Module, ConfigurableMod
 
       // Button
       'button.edit' => $this->_('Edit my data'),
-
-      // Login modal link (register)
-      'login.register_link' => $this->_('Create an account'),
-      // Tooltips explaining each login-modal link (plain language, for non-tech users)
-      'login.magiclink_tooltip' => $this->_('Never set a password (e.g. after a purchase)? Enter your email and we’ll send you a link to sign in without one. Use the same email address you bought with.'),
-      'login.register_tooltip'  => $this->_('No account yet? Create one here for free (e.g. to get freebies) — no purchase needed.'),
 
       // Profile modal
       'profile.title'          => $this->_('Edit my data'),
