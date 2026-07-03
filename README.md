@@ -74,7 +74,7 @@ If you use `renderLoginLink()` in your template header/navigation (e.g., `_init.
 This ensures:
 - After Stripe checkout → button shows **"My Account"** ✓
 - After magic link click → button shows **"My Account"** ✓
-- Without this order → button would show **"Customer Login"** until page reload ✗
+- Without this order → button would show **"Sign in"** until page reload ✗
 
 ---
 
