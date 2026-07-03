@@ -102,6 +102,27 @@ All UI elements use regular Bootstrap classes and can be styled using your prefe
 
 ---
 
+## Template API
+
+Methods to call from your ProcessWire templates via
+`$modules->get('StripePlCustomerPortal')->…`.
+
+- **`renderAccount(string $view = 'grid', string $appendCards = ''): string`** — the
+  full account area (used by the module's `/account/` template). `$view` is one of
+  `grid`, `grid-all` or `table`.
+- **`renderLoginLink(array $opts = []): string`** — a state-aware link showing
+  *Sign in* / *My account* / *Sign out* depending on the user; put it in your nav.
+  Options: `class`, `label`.
+- **`renderEditButton(array $opts = []): string`** — an "Edit my data" button that
+  opens the profile modal.
+
+Building blocks (only if you render the account area yourself instead of using
+`renderAccount()`): `renderPurchasesGridAll(User)`, `renderPurchasesGrid(User)`,
+`renderUnownedProducts(User)`, `renderCard(...)`, `cardCss()`, `renderTagFilter()`,
+`renderHeaderButtons()`, `modalProfileEdit()`, `getPurchasesData(User)`.
+
+---
+
 ## 5) Stripe Billing Portal
 
 In the **table view** of `/account/`, each purchase shows a button that opens
