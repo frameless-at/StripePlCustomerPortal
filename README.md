@@ -1,12 +1,17 @@
 # StripePaymentLinks Customer Portal (ProcessWire)
 
-A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow – no duplicate auth.
+A lightweight companion module for **StripePaymentLinks (SPL)** that adds a ready-to-use customer page at **`/account/`** plus small developer helpers (login/account/logout link & profile modal). It integrates with SPL’s own login modal and redirect flow – no duplicate auth – and, when SPL’s **Freebies** feature is configured, lists the member’s freebies in `/account/` automatically.
+
+> **Optional companion.** Freebies, the login procedure (password reset / passwordless
+> login link / registration) and all auth live in **StripePaymentLinks core**. This module
+> only adds the `/account/` hub and its helpers; installing it is not required to sell
+> products or offer freebies.
 
 ![Customer portal grid view](img/account_grid.png)
 
 ---
 
-## 1) Requirements
+## Requirements
 
 - **ProcessWire** 3.0.210+
 - **StripePaymentLinks** (SPL) installed & configured
@@ -21,16 +26,16 @@ A lightweight companion module for **StripePaymentLinks (SPL)** that adds a read
 
 ---
 
-## 2) What this module installs
+## What this module installs
 
-- Template **`spl_account`** (fieldgroup **`fg_spl_account`**)
+- Template **`spl_account`** (fieldgroup **`spl_account`**)
 - Page **`/account/`** using `spl_account`
 - Template file **`/site/templates/spl_account.php`** with a minimal layout that calls the portal methods  
   (You can customize this file freely.)
 
 ---
 
-## 3) Quick start
+## Quick start
 
 Add a login/account/logout link anywhere in your templates:
 
@@ -41,10 +46,10 @@ You can also pass CSS classes or the links label via options:
 ```
 $modules->get('StripePlCustomerPortal')->renderLoginLink(['class' => 'nav-link text-white', 'label' => 'Custom label']);
 ```
-**Behavior**
-- Logged out → shows **“Customer Login”** that opens SPL’s `#loginModal` and sets the intended redirect to `/account/`.
-- Logged in on `/account/` → shows **“Logout”** (appends `?spl_logout=1`).
-- Logged in elsewhere → shows **“My Account”** linking to `/account/`.
+**Behavior** (labels are translatable via `link.login` / `link.logout` / `link.account`)
+- Logged out → a **“Sign in”** link that opens SPL’s `#loginModal` and sets the intended redirect to `/account/`.
+- Logged in on `/account/` → a **“Sign out”** link (appends `?spl_logout=1`).
+- Logged in elsewhere → a **“My account”** link to `/account/`.
 
 The module auto-creates `/account/`. You can link to it or place the button in your site header.
 
@@ -73,7 +78,7 @@ This ensures:
 
 ---
 
-## 4) Account page usage
+## Account page usage
 
 The file `/site/templates/spl_account.php` is created for you and calls the module’s renderer. It shows:
 - page header with **view switcher** and **“Edit my data”** button
@@ -102,6 +107,20 @@ All UI elements use regular Bootstrap classes and can be styled using your prefe
 
 ---
 
+## Freebies in the account
+
+When **StripePaymentLinks**’ Freebies feature is configured, this module lists the
+member’s freebies in the `/account/` grid **automatically** — no template change. It
+attaches the core freebie service to its `accountAppendCards` extension point and renders
+freebie cards with the same look as purchased products (`renderCard`).
+
+- Freebie cards appear in the **grid** views (`grid` / `grid-all`) only, not in the table view.
+- Registration, gating and the access mail are handled by the **core** module; this module
+  only adds the account listing.
+- Members have access to **all** freebies, so the account is where they browse them.
+
+---
+
 ## Template API
 
 Methods to call from your ProcessWire templates via
@@ -123,7 +142,7 @@ Building blocks (only if you render the account area yourself instead of using
 
 ---
 
-## 5) Stripe Billing Portal
+## Stripe Billing Portal
 
 In the **table view** of `/account/`, each purchase shows a button that opens
 the **Stripe Billing Portal** for that purchase, using the stored `customer_id`
@@ -142,7 +161,7 @@ Example view (Stripe Billing Portal):
 
 ---
 
-## 6) Product data used by the grid (important)
+## Product data used by the grid (important)
 
 The grid is built from the user’s SPL purchases and your product pages. For **each product**:
 
@@ -155,7 +174,7 @@ The grid is built from the user’s SPL purchases and your product pages. For **
 
 ---
 
-## 7) Internationalization (i18n)
+## Internationalization (i18n)
 
 All UI texts live in the module’s `i18n()` and are picked up by ProcessWire’s Language tools.
 The module also overrides SPL’s `t()` **only** when the intended URL points to `/account/`, so you can present custom login modal texts for the portal flow.
@@ -163,13 +182,13 @@ The module also overrides SPL’s `t()` **only** when the intended URL points to
 
 ---
 
-## 8) Uninstall
+## Uninstall
 
 - Removes `/account/` page and `spl_account` template.
 - Leaves `/site/templates/spl_account.php` in place (in case you customized it).
 
 ---
 
-## 9) License
+## License
 
 MIT.
