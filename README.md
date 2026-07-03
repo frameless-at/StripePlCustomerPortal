@@ -53,28 +53,28 @@ $modules->get('StripePlCustomerPortal')->renderLoginLink(['class' => 'nav-link t
 
 The module auto-creates `/account/`. You can link to it or place the button in your site header.
 
-**Important: Template order for login button**
+**Login state and `render()` placement**
 
-If you use `renderLoginLink()` in your template header/navigation (e.g., `_init.php` or layout file), make sure to call StripePaymentLinks' `render()` **BEFORE** rendering the header to ensure the login state is reflected correctly after Stripe checkout or magic link login:
+`renderLoginLink()` reflects the **session**, which is established at the start of every
+request — so it already shows the correct state (e.g. **“Sign out”** when logged in) *no
+matter where* you echo `StripePaymentLinks::render($page)`. Echoing `render()` at the bottom
+of the body, just before `</body>` (the usual place), works fine; the login link in your
+header is correct:
 
-```html  
+```html
 <body>
-<!-- 1) Handle SPL login FIRST (checkout/magic link) -->
-  <?= $modules->get('StripePaymentLinks')->render($page); ?>
-
-<header>
-<!-- 2) NOW render header with login button (will show correct state) -->
-  <?= $modules->get('StripePlCustomerPortal')->renderLoginLink() ?>
-</header>
-<main>
-  <?= $content ?>
-</main>
+  <header>
+    <?= $modules->get('StripePlCustomerPortal')->renderLoginLink() ?>
+  </header>
+  <main><?= $content ?></main>
+  <?= $modules->get('StripePaymentLinks')->render($page) ?>
+</body>
 ```
 
-This ensures:
-- After Stripe checkout → button shows **"My Account"** ✓
-- After magic link click → button shows **"My Account"** ✓
-- Without this order → button would show **"Sign in"** until page reload ✗
+The one exception is the single request where `render()` *performs* the login itself — a
+Stripe checkout return (`?session_id=…`) or a magic-link click (`?access=…`): on that page a
+header rendered *before* the `render()` call shows the pre-login state until the next
+navigation. Move `render()` above the header only if that one-request delay matters to you.
 
 ---
 
