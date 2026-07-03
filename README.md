@@ -71,11 +71,6 @@ header is correct:
 </body>
 ```
 
-The one exception is the single request where `render()` *performs* the login itself — a
-Stripe checkout return (`?session_id=…`) or a magic-link click (`?access=…`): on that page a
-header rendered *before* the `render()` call shows the pre-login state until the next
-navigation. Move `render()` above the header only if that one-request delay matters to you.
-
 ---
 
 ## Account page usage
