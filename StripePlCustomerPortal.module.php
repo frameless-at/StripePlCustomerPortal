@@ -570,7 +570,7 @@ class StripePlCustomerPortal extends WireData implements Module {
      <div class="row">
        <div class="col-lg-10 mx-auto">
          <div class="d-flex align-items-center justify-content-between mb-3">
-           <h1 class="mb-0">Hello, ' . $user->title . '</h1>
+           <h1 class="mb-0">Hello, ' . $modules->get('StripePaymentLinks')->firstName($user) . '</h1>
            ' . $portal->renderHeaderButtons() . '
          </div>
        </div>
