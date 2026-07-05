@@ -1276,7 +1276,10 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     if (!$unowned) return '';
 
     // CSS only for gray overlay
-    $out = '<style id="spl-gray-cards">
+    // Emit the shared overlay CSS here too: this grid renders spl-cards but may be the only
+    // one on the page (e.g. a customer with no purchases and no visible freebies), in which
+    // case no other grid emits cardCss(). Duplicate <style id> is harmless (identical rules).
+    $out = $this->cardCss() . '<style id="spl-gray-cards">
   .spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
   .spl-card.spl-gray:hover .card-img-top{filter:none;opacity:1}
   .spl-card.spl-gray.spl-no-img .position-relative{background:#6c757d}
