@@ -896,7 +896,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     // products – without the site's own spl_account.php having to be adjusted.
     // Order: owned products → companion cards (freebies) → unowned teasers.
     $appendCards .= $this->accountAppendCards($user, $view);
-    $grid = '<div class="row g-3" id="splGrid">' . $content . $appendCards . $teasers . '</div>';
+    $grid = $this->cardCss() . '<div class="row g-3" id="splGrid">' . $content . $appendCards . $teasers . '</div>';
 
     // Tag filter only in grid views (the table view has its own purchases-only list).
     // The filter is self-contained: its JS discovers the tags from the rendered
@@ -1200,7 +1200,6 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     }
     if (!$usable) return '';
 
-    $css = $this->cardCss();
 
     $badge = function(array $r): string {
       if (($r['status_key'] ?? '') === 'active_until' && !empty($r['status_until'])) {
@@ -1211,7 +1210,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
       return '';
     };
 
-    $out = $css;
+    $out = '';
     foreach ($usable as $r) {
       $productPage = $this->wire('pages')->get((int) $r['product_id']);
       $out .= $this->renderCard($r['product_title'], $r['product_url'], $r['thumb_url'], $badge($r),
@@ -1276,10 +1275,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     if (!$unowned) return '';
 
     // CSS only for gray overlay
-    // Emit the shared overlay CSS here too: this grid renders spl-cards but may be the only
-    // one on the page (e.g. a customer with no purchases and no visible freebies), in which
-    // case no other grid emits cardCss(). Duplicate <style id> is harmless (identical rules).
-    $out = $this->cardCss() . '<style id="spl-gray-cards">
+    $out = '<style id="spl-gray-cards">
   .spl-card.spl-gray .card-img-top{filter:grayscale(100%);opacity:.9}
   .spl-card.spl-gray:hover .card-img-top{filter:none;opacity:1}
   .spl-card.spl-gray.spl-no-img .position-relative{background:#6c757d}
