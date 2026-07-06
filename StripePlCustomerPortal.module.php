@@ -277,20 +277,38 @@ class StripePlCustomerPortal extends WireData implements Module {
            $returnUrl = $default;
        }
 
-       // --- create portal session ---
+       // --- open the right billing target ---
        try {
            $stripe = new \Stripe\StripeClient($secret);
-           $bp = $stripe->billingPortal->sessions->create([
-               'customer'   => $customerId,
-               'return_url' => $returnUrl,
-           ]);
 
+           // One-time purchase → open exactly THAT invoice (its hosted page).
+           $invParam = trim((string) $input->get->text('invoice'));
+           if ($invParam !== '' && preg_match('~^in_[A-Za-z0-9]+$~', $invParam)) {
+               try {
+                   $inv    = $stripe->invoices->retrieve($invParam, []);
+                   $hosted = (string) ($inv->hosted_invoice_url ?? '');
+                   if ($hosted !== '') { $session->redirect($hosted); return; }
+                   $log->error("Portal billing_portal: invoice {$invParam} has no hosted URL (user={$user->id})");
+               } catch (\Throwable $e) {
+                   $log->error("Portal billing_portal: invoice {$invParam} retrieve failed: " . $e->getMessage());
+               }
+               // fall through to the customer portal if the invoice could not be opened
+           }
+
+           // Subscription → open the portal deep-linked to exactly THAT subscription (manage/cancel).
+           $params   = ['customer' => $customerId, 'return_url' => $returnUrl];
+           $subParam = trim((string) $input->get->text('subscription'));
+           if ($subParam !== '' && preg_match('~^sub_[A-Za-z0-9]+$~', $subParam)) {
+               $params['flow_data'] = ['type' => 'subscription_update', 'subscription_update' => ['subscription' => $subParam]];
+           }
+
+           $bp = $stripe->billingPortal->sessions->create($params);
            if (empty($bp->url)) {
                $log->error("Portal billing_portal: empty session URL (user={$user->id})");
                $this->emitApiError(502, 'Unable to open Stripe customer portal.');
            }
 
-           $session->redirect((string)$bp->url);
+           $session->redirect((string) $bp->url);
            return;
 
        } catch (\Throwable $e) {
@@ -754,6 +772,20 @@ public function getPurchasesData(User $user): array {
         $isActive  = true;
       }
 
+      // Billing references from THIS row's own checkout session (robust, no product_id re-resolution).
+      $bCust = $stripeSession['customer'] ?? '';
+      $bCust = is_array($bCust) ? (string) ($bCust['id'] ?? '') : (string) $bCust;
+      $bSub  = '';
+      if (!empty($stripeSession['subscription'])) {
+        $sv   = $stripeSession['subscription'];
+        $bSub = is_array($sv) ? (string) ($sv['id'] ?? '') : (string) $sv;
+      }
+      $bInv = '';
+      if ($bSub === '' && !empty($stripeSession['invoice'])) {
+        $iv   = $stripeSession['invoice'];
+        $bInv = is_array($iv) ? (string) ($iv['id'] ?? '') : (string) $iv;
+      }
+
       $rows[] = [
         'purchase_ts'   => $ts,
         'purchase_date' => $date,
@@ -765,6 +797,9 @@ public function getPurchasesData(User $user): array {
         'status_key'    => $statusKey,    // 'active'|'active_until'|'expired_on'|'paused'|'canceled'
         'status_until'  => $statusUntil,  // unix ts or null
         'is_active'     => $isActive,     // true|false
+        'customer'      => $bCust,
+        'subscription'  => $bSub,         // set for subscription purchases
+        'invoice'       => $bInv,         // set for one-time purchases
       ];
     }
   }
@@ -794,6 +829,9 @@ public function getPurchasesData(User $user): array {
         'status_key'    => 'free_access',
         'status_until'  => null,
         'is_active'     => true,
+        'customer'      => '',
+        'subscription'  => '',
+        'invoice'       => '',
       ];
     }
   }
@@ -1327,27 +1365,6 @@ private function renderPurchasesTable(User $user): string {
     $debugOutput .= '</div>';
   }
 
-  $resolveCustomerId = function(User $u, int $productId): ?string {
-    if (!$u->hasField('spl_purchases') || !$u->spl_purchases->count()) return null;
-
-    $items = iterator_to_array($u->spl_purchases);
-    usort($items, fn($a,$b)=>((int)$b->created)<=>((int)$a->created));
-
-    foreach ($items as $it) {
-      $meta = (array)$it->meta('stripe_session');
-      if (!$meta) continue;
-
-      $pids = array_map('intval', (array)$it->meta('product_ids'));
-      if (!in_array($productId, $pids, true)) continue;
-
-      $raw = $meta['customer'] ?? null;
-      if (is_string($raw) && $raw !== '') return $raw;
-      if (is_array($raw) && isset($raw['id'])) return (string)$raw['id'];
-      if (is_object($raw) && isset($raw->id)) return (string)$raw->id;
-    }
-    return null;
-  };
-
   $accountUrl = $this->wire('pages')->get('template=spl_account')->url
               ?: $this->wire('config')->urls->root . 'account/';
   $returnUrl  = $this->wire('page')->httpUrl;
@@ -1366,14 +1383,17 @@ private function renderPurchasesTable(User $user): string {
 
   foreach ($rows as $r) {
 
-    $cid = $resolveCustomerId($user, (int)$r['product_id']);
+    // Per-row billing target: subscription → manage that subscription; one-time → that invoice.
+    $cid = (string) ($r['customer'] ?? '');
+    $sub = (string) ($r['subscription'] ?? '');
+    $inv = (string) ($r['invoice'] ?? '');
 
     $invoiceLink = '';
-    if ($cid) {
-      $bp = $accountUrl
-          . '?action=billing_portal'
-          . '&customer=' . rawurlencode($cid)
-          . '&return='   . rawurlencode($returnUrl);
+    if ($cid || $inv) {
+      $bp = $accountUrl . '?action=billing_portal' . '&return=' . rawurlencode($returnUrl);
+      if ($cid) $bp .= '&customer=' . rawurlencode($cid);
+      if ($sub)      $bp .= '&subscription=' . rawurlencode($sub);
+      elseif ($inv)  $bp .= '&invoice='      . rawurlencode($inv);
 
       $invoiceLink = '<a class="btn btn-sm btn-light" target="_blank" '
                    . 'href="' . $h($bp) . '">'
