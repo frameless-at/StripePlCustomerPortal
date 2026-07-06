@@ -240,16 +240,24 @@ class StripePlCustomerPortal extends WireData implements Module {
            $this->emitApiError(403, 'No Stripe customer ID found.');
        }
 
-       // resolve secret
-       $secret = $this->detectStripeSecretFromSpl();
-       if($secret === '') {
-           $this->emitApiError(500, 'Stripe secret not configured.');
-       }
-
        // load Stripe SDK if present
        $sdk = $this->wire('config')->paths->siteModules . 'StripePaymentLinks/vendor/stripe-php/init.php';
        if (is_file($sdk)) {
            require_once $sdk;
+       }
+
+       // The site may run several Stripe accounts — pick the key whose account owns this customer.
+       $spl  = $this->wire('modules')->get('StripePaymentLinks');
+       $keys = method_exists($spl, 'getStripeKeys') ? $spl->getStripeKeys() : [];
+       if (!$keys) { $one = $this->detectStripeSecretFromSpl(); if ($one !== '') $keys = [$one]; }
+       $stripe = null;
+       foreach ($keys as $k) {
+           try { $c = new \Stripe\StripeClient(['api_key' => $k]); $c->customers->retrieve($customerId); $stripe = $c; break; }
+           catch (\Throwable $e) { /* customer not in this account, try next key */ }
+       }
+       if (!$stripe) {
+           $log->error("Portal billing_portal: customer {$customerId} not in any configured Stripe account (user={$user->id})");
+           $this->emitApiError(403, 'Customer not found in the configured Stripe account.');
        }
 
        // --- sanitize/normalize return_url to absolute and same host ---
@@ -277,9 +285,8 @@ class StripePlCustomerPortal extends WireData implements Module {
            $returnUrl = $default;
        }
 
-       // --- open the right billing target ---
+       // --- open the right billing target (using the account resolved above) ---
        try {
-           $stripe = new \Stripe\StripeClient($secret);
 
            // One-time purchase → open exactly THAT invoice (its hosted page).
            $invParam = trim((string) $input->get->text('invoice'));
