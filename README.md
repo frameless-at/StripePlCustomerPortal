@@ -76,6 +76,7 @@ header is correct:
 ## Account page usage
 
 The file `/site/templates/spl_account.php` is created for you and calls the module’s renderer. It shows:
+- a **greeting** with the member’s first name (via the core’s `firstName()`)
 - page header with **view switcher** and **“Edit my data”** button
 - the **grid** of purchased products (and optional “not yet purchased” items)
 - a profile **edit modal** (AJAX + CSRF)
@@ -112,7 +113,10 @@ freebie cards with the same look as purchased products (`renderCard`).
 - Freebie cards appear in the **grid** views (`grid` / `grid-all`) only, not in the table view.
 - Registration, gating and the access mail are handled by the **core** module; this module
   only adds the account listing.
-- Members have access to **all** freebies, so the account is where they browse them.
+- Only freebies the member can actually **open** are listed: the hub passes `onlyGranted` to
+  the core's `renderFreebieCards()`, so users without access never see locked cards. Members
+  (and, when the core's *Grant customers freebie access* option is on, customers) have access
+  to **all** freebies; anyone else sees none here.
 
 ---
 
