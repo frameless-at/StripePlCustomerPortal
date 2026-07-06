@@ -839,7 +839,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    *
    * @param string $view
    * @param string $appendCards Extra card columns appended INSIDE the same .row g-3
-   *                            (e.g. freebies from StripePlFreebies::renderFreebieCards()).
+   *                            (e.g. freebies from the core's renderFreebieCards()).
    * @return string
    */
   public function renderAccount(string $view = 'grid', string $appendCards = ''): string {
@@ -891,7 +891,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
     }
 
     // $appendCards: explicitly passed card columns + hookable extension point.
-    // Companion add-ons (e.g. StripePlFreebies) attach to accountAppendCards()
+    // Companion add-ons (e.g. the core freebies service) attach to accountAppendCards()
     // and thereby appear on EVERY installation in THE SAME .row g-3 behind the
     // products – without the site's own spl_account.php having to be adjusted.
     // Order: owned products → companion cards (freebies) → unowned teasers.
@@ -1039,7 +1039,7 @@ private function extractProductNameFromStripeSession(array $stripeSession, int $
    */
   /**
    * Public: CSS for the spl-card overlay style. Emit once per page.
-   * Shared so companion addons (e.g. StripePlFreebies) render identical cards.
+   * Shared so companion add-ons (e.g. the core freebies service) render identical cards.
    */
   public function cardCss(): string {
     return '<style id="spl-card-overlay-css">
