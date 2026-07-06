@@ -302,14 +302,13 @@ class StripePlCustomerPortal extends WireData implements Module {
                // fall through to the customer portal if the invoice could not be opened
            }
 
-           // Subscription → open the portal deep-linked to exactly THAT subscription (manage/cancel).
-           $params   = ['customer' => $customerId, 'return_url' => $returnUrl];
-           $subParam = trim((string) $input->get->text('subscription'));
-           if ($subParam !== '' && preg_match('~^sub_[A-Za-z0-9]+$~', $subParam)) {
-               $params['flow_data'] = ['type' => 'subscription_update', 'subscription_update' => ['subscription' => $subParam]];
-           }
-
-           $bp = $stripe->billingPortal->sessions->create($params);
+           // Subscription (or any other case) → the customer's billing portal: cancel, change plan
+           // and full invoice history. Stripe offers no per-subscription deep-link that exposes both
+           // cancelling AND invoices, so the portal is the management hub here.
+           $bp = $stripe->billingPortal->sessions->create([
+               'customer'   => $customerId,
+               'return_url' => $returnUrl,
+           ]);
            if (empty($bp->url)) {
                $log->error("Portal billing_portal: empty session URL (user={$user->id})");
                $this->emitApiError(502, 'Unable to open Stripe customer portal.');
@@ -1390,17 +1389,17 @@ private function renderPurchasesTable(User $user): string {
 
   foreach ($rows as $r) {
 
-    // Per-row billing target: subscription → manage that subscription; one-time → that invoice.
+    // Per-row billing target: one-time → that exact invoice; subscription → the customer's
+    // billing portal (cancel + invoices + update). Stripe has no per-subscription deep-link that
+    // exposes cancel AND invoices, so the portal is the management hub for subscriptions.
     $cid = (string) ($r['customer'] ?? '');
-    $sub = (string) ($r['subscription'] ?? '');
     $inv = (string) ($r['invoice'] ?? '');
 
     $invoiceLink = '';
     if ($cid || $inv) {
       $bp = $accountUrl . '?action=billing_portal' . '&return=' . rawurlencode($returnUrl);
       if ($cid) $bp .= '&customer=' . rawurlencode($cid);
-      if ($sub)      $bp .= '&subscription=' . rawurlencode($sub);
-      elseif ($inv)  $bp .= '&invoice='      . rawurlencode($inv);
+      if ($inv) $bp .= '&invoice='  . rawurlencode($inv);
 
       $invoiceLink = '<a class="btn btn-sm btn-light" target="_blank" '
                    . 'href="' . $h($bp) . '">'
