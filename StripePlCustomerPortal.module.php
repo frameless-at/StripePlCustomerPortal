@@ -248,7 +248,7 @@ class StripePlCustomerPortal extends WireData implements Module {
 
        // The site may run several Stripe accounts — pick the key whose account owns this customer.
        $spl  = $this->wire('modules')->get('StripePaymentLinks');
-       $keys = method_exists($spl, 'getStripeKeys') ? $spl->getStripeKeys() : [];
+       $keys = is_callable([$spl, 'getStripeKeys']) ? $spl->getStripeKeys() : [];
        if (!$keys) { $one = $this->detectStripeSecretFromSpl(); if ($one !== '') $keys = [$one]; }
        $stripe = null;
        foreach ($keys as $k) {
